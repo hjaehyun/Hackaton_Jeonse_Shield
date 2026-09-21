@@ -3,6 +3,7 @@
 
 import { parseItems, normalizeRent, normalizeTrade } from './rtms.js';
 import { cached } from './cache.js';
+export { recentMonths } from './months.js';
 
 export const RENT_URL = 'https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent';
 
@@ -31,8 +32,6 @@ const CACHE_VERSION = 'v1';
 const CACHE_TTL_SECONDS = 86400;
 const TIMEOUT_MS = 8000;
 
-const SEOUL_OFFSET_MS = 9 * 60 * 60 * 1000;
-
 export class UpstreamError extends Error {
   /** @param {string} reason Short, key-free label for what went wrong. */
   constructor(reason = 'unknown') {
@@ -43,28 +42,6 @@ export class UpstreamError extends Error {
     this.code = 'UPSTREAM_UNAVAILABLE';
     this.reason = reason;
   }
-}
-
-/**
- * `['202609', '202608', ...]`, newest first, counting back from `now`.
- *
- * Months are read in Asia/Seoul. Every user and every transaction is in KST,
- * so reading them in UTC would drop the first nine hours of each month.
- */
-export function recentMonths(count, now = new Date()) {
-  const seoul = new Date(now.getTime() + SEOUL_OFFSET_MS);
-  const months = [];
-  let year = seoul.getUTCFullYear();
-  let month = seoul.getUTCMonth() + 1;
-  for (let i = 0; i < count; i += 1) {
-    months.push(`${year}${String(month).padStart(2, '0')}`);
-    month -= 1;
-    if (month === 0) {
-      month = 12;
-      year -= 1;
-    }
-  }
-  return months;
 }
 
 // Errors we expect from a healthy codebase talking to an unhealthy network.

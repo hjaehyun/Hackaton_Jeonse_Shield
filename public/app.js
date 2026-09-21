@@ -1,4 +1,6 @@
 import { jeonseRatio, verdict, tradeDistribution, similarPrices } from './lib/ratio.js';
+import { listComplexes, complexTransactions, monthRangeLabel } from './lib/aggregate.js';
+import { recentMonths } from './lib/months.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -79,6 +81,112 @@ function fail(selector, message) {
   return false;
 }
 
+// How many months of transactions one diagnosis looks at. Each month is a
+// separate request so that no single Worker invocation parses more than one
+// month of XML; the browser issues them together.
+const MONTHS = 6;
+
+// Rows for the district currently selected, keyed by lawdCd so switching back
+// to a district does not refetch. The Worker also caches, but this avoids the
+// round trip entirely.
+let monthlyRows = null;
+let complexes = [];
+let selectedComplex = null;
+
+function resetComplexes(message) {
+  complexes = [];
+  selectedComplex = null;
+  monthlyRows = null;
+  $('#complex-list').replaceChildren();
+  $('#complex-empty').hidden = true;
+  $('#complex-filter').value = '';
+  $('#complex-status').textContent = message;
+}
+
+async function fetchMonthRows(kind, lawdCd, ym) {
+  const response = await fetch(`/api/month?kind=${kind}&lawdCd=${lawdCd}&ym=${ym}`);
+  if (!response.ok) throw new Error(`${kind} ${ym}`);
+  return (await response.json()).rows ?? [];
+}
+
+async function loadComplexes(lawdCd) {
+  if (monthlyRows?.lawdCd === lawdCd) {
+    renderComplexes($('#complex-filter').value);
+    return;
+  }
+  resetComplexes('단지를 불러오는 중입니다...');
+
+  const months = recentMonths(MONTHS);
+  // Fanning out here is the point: one Worker invocation per region-month.
+  const requests = months.flatMap((ym) => [
+    fetchMonthRows('trade', lawdCd, ym).then((rows) => ({ kind: 'trade', rows })),
+    fetchMonthRows('rent', lawdCd, ym).then((rows) => ({ kind: 'rent', rows })),
+  ]);
+
+  let settled;
+  try {
+    settled = await Promise.all(requests);
+  } catch {
+    // Never fall back to partial data: a short range moves the median.
+    monthlyRows = null;
+    $('#complex-status').textContent = '실거래가를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+    return;
+  }
+
+  monthlyRows = {
+    lawdCd,
+    months,
+    trades: settled.filter((r) => r.kind === 'trade').flatMap((r) => r.rows),
+    rents: settled.filter((r) => r.kind === 'rent').flatMap((r) => r.rows),
+  };
+  complexes = listComplexes(monthlyRows.trades, monthlyRows.rents);
+
+  const range = monthRangeLabel(months);
+  $('#complex-status').textContent = complexes.length
+    ? `${range} 거래가 있는 단지 ${format(complexes.length)}곳`
+    : `${range} 이 지역에는 아파트 거래 기록이 없습니다.`;
+  renderComplexes('');
+}
+
+function renderComplexes(filter) {
+  const needle = String(filter ?? '').replace(/\s+/g, '').toLowerCase();
+  const shown = needle ? complexes.filter((c) => c.key.includes(needle)) : complexes;
+  const list = $('#complex-list');
+  list.replaceChildren();
+
+  for (const item of shown) {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'complex-option';
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(item.key === selectedComplex?.key));
+    if (item.key === selectedComplex?.key) option.classList.add('selected');
+
+    const name = document.createElement('strong');
+    // Ministry-supplied text is never inserted as HTML.
+    name.textContent = item.name;
+    const meta = document.createElement('small');
+    meta.textContent = `매매 ${format(item.tradeCount)}건 · 전월세 ${format(item.rentCount)}건`;
+    option.append(name, meta);
+
+    option.addEventListener('click', () => {
+      selectedComplex = item;
+      $$('.complex-option').forEach((el) => {
+        const chosen = el === option;
+        el.classList.toggle('selected', chosen);
+        el.setAttribute('aria-selected', String(chosen));
+      });
+      clearError();
+    });
+
+    const li = document.createElement('li');
+    li.append(option);
+    list.append(li);
+  }
+
+  $('#complex-empty').hidden = shown.length > 0 || complexes.length === 0;
+}
+
 function validate(number) {
   clearError();
   if (number === 1) {
@@ -87,7 +195,7 @@ function validate(number) {
     if (!group) return fail('#sido-select', '시도를 선택해 주세요.');
     if (!group.items.some((item) => item.code === $('#district-select').value)) return fail('#district-select', '시군구를 선택해 주세요.');
   }
-  if (number === 2 && !$('#apartment-input').value.trim()) return fail('#apartment-input', '아파트 단지명을 입력해 주세요.');
+  if (number === 2 && !selectedComplex) return fail('#complex-filter', '목록에서 단지를 선택해 주세요.');
   if (number === 3) {
     for (const [selector, label, minimum, integer] of [
       ['#area-input', '전용면적', 0.01, false], ['#deposit-input', '보증금', 1, true], ['#rent-input', '월세', 0, true],
@@ -114,7 +222,8 @@ $('#diagnosis-form').addEventListener('submit', (event) => {
   const district = group.items.find((entry) => entry.code === $('#district-select').value);
   contract = {
     sido: group.sido, district: district.name, lawdCd: district.code,
-    apartment: $('#apartment-input').value.trim(), area: Number($('#area-input').value),
+    apartment: selectedComplex.name, complexKey: selectedComplex.key,
+    area: Number($('#area-input').value),
     deposit: Number($('#deposit-input').value), rent: Number($('#rent-input').value),
   };
   location.hash = 'result';
@@ -129,12 +238,20 @@ $('#sido-select').addEventListener('change', () => {
   select.replaceChildren(new Option(group ? '시군구를 선택해 주세요' : '시도를 먼저 선택해 주세요', ''));
   select.disabled = !group;
   if (group) group.items.forEach((item) => select.add(new Option(item.name, item.code)));
+  resetComplexes('시군구를 선택하면 실제 거래가 있는 단지를 불러옵니다.');
   clearError();
 });
+$('#district-select').addEventListener('change', (event) => {
+  clearError();
+  if (event.target.value) loadComplexes(event.target.value);
+  else resetComplexes('시군구를 선택하면 실제 거래가 있는 단지를 불러옵니다.');
+});
+$('#complex-filter').addEventListener('input', (event) => renderComplexes(event.target.value));
 $('#new-diagnosis').addEventListener('click', () => {
   contract = null;
   step = 1;
   $('#diagnosis-form').reset();
+  monthlyRows = null;
   $('#sido-select').dispatchEvent(new Event('change'));
 });
 

@@ -20,13 +20,25 @@ async function capture(page, name) {
   await page.screenshot({ path: `artifacts/${name}-full.png`, fullPage: true });
 }
 async function clickNext(page) { await page.locator('#next-step').click(); }
-async function fillToReport(page, area, deposit = '35000', rent = '0', name = '전세방패 아파트') {
+
+// Step 2 is now a list built from real transactions, so it has to load before
+// anything can be picked. These tests run against the live ministry API; the
+// Worker caches each region-month in local D1, so repeat runs do not re-fetch.
+async function pickComplex(page, index = 0) {
+  await page.locator('#complex-list .complex-option').first().waitFor({ state: 'visible', timeout: 30000 });
+  const option = page.locator('#complex-list .complex-option').nth(index);
+  const name = (await option.locator('strong').innerText()).trim();
+  await option.click();
+  return name;
+}
+
+async function fillToReport(page, area, deposit = '35000', rent = '0') {
   await page.goto(baseURL + '/#diagnosis');
   await page.locator('#sido-select option[value="서울특별시"]').waitFor({ state: 'attached' });
   await page.selectOption('#sido-select', '서울특별시');
   await page.selectOption('#district-select', '11110');
   await clickNext(page);
-  await page.fill('#apartment-input', name);
+  await pickComplex(page);
   await clickNext(page);
   await page.fill('#area-input', area);
   await page.fill('#deposit-input', deposit);
@@ -54,12 +66,14 @@ try {
     await fit(page, `${width}px wizard step 1`);
     await clickNext(page);
     await clickNext(page);
-    assert.match(await page.locator('#form-error').innerText(), /단지명을 입력/);
-    await page.fill('#apartment-input', '전세방패 아파트');
+    assert.match(await page.locator('#form-error').innerText(), /단지를 선택/);
+    const chosen = await pickComplex(page);
+    assert.ok(chosen.length > 0, 'the list must show a real complex name');
+    results.push({ check: `${width}px complex list built from live transactions`, result: 'pass', chosen });
     await page.locator('#previous-step').click();
     assert.equal(await page.locator('#district-select').inputValue(), '11110');
     await clickNext(page);
-    assert.equal(await page.locator('#apartment-input').inputValue(), '전세방패 아파트');
+    assert.equal(await page.locator('#complex-option-selected, .complex-option.selected').count(), 1, 'the selection must survive going back');
     await fit(page, `${width}px wizard step 2`);
     await clickNext(page);
     await clickNext(page);
@@ -154,10 +168,24 @@ try {
   }
   const page = await browser.newPage({ viewport: { width: 360, height: 800 } });
   page.on('pageerror', (e) => errors.push(e.message));
-  await fillToReport(page, '84', '35000', '0', '<img src=x onerror=alert(1)>');
+  // Complex names come from the ministry now, not from the user, so that is
+  // where untrusted text enters the page. Serve a hostile one and check it is
+  // rendered as text in both the list and the report.
+  const HOSTILE = '<img src=x onerror=alert(1)>';
+  await page.route('**/api/month*', async (route) => {
+    const kind = new URL(route.request().url()).searchParams.get('kind');
+    const shared = { name: HOSTILE, key: 'hostile', area: 84, floor: 3, year: 2026, month: 6, day: 17 };
+    const rows = kind === 'trade'
+      ? [1, 2, 3, 4].map((n) => ({ ...shared, price: 60000 + n * 1000, cancelled: false }))
+      : [{ ...shared, deposit: 35000, monthlyRent: 0 }];
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind, rows }) });
+  });
+  await fillToReport(page, '84', '35000', '0');
+  assert.equal(await page.locator('#complex-list img').count(), 0, 'the list rendered supplied markup');
   assert.match(await page.locator('#contract-summary').innerText(), /<img src=x/);
   assert.equal(await page.locator('#contract-summary img').count(), 0);
-  results.push({ check: 'user text escaped; no HTML execution', result: 'pass' });
+  results.push({ check: 'ministry-supplied names escaped; no HTML execution', result: 'pass' });
+  await page.unroute('**/api/month*');
   await page.goto(baseURL + '/#diagnosis');
   await page.reload({ waitUntil: 'networkidle' });
   await page.locator('#sido-select option[value="세종특별자치시"]').waitFor({ state: 'attached' });
