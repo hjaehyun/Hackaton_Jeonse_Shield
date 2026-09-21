@@ -1,4 +1,4 @@
-# 전세방패 (Jeonse Shield)
+﻿# 전세방패 (Jeonse Shield)
 
 전월세 계약 전 3분 셀프 위험 진단 서비스의 1일차 목업입니다. 현재 결과는 실제 지역·단지 조회 결과가 아니며 실제 계약 판단에 사용할 수 없습니다.
 
@@ -48,7 +48,7 @@ Hono / 순수 JavaScript / Vite Pages 빌드 / Cloudflare Workers / 직접 그�
 - `/#result`: 입력을 완료한 현재 탭의 목업 결과. 새로고침하면 입력 상태가 사라져 홈으로 돌아갑니다.
 - `/data/lawd.json`: 정적 법정동코드
 - `/api/health`: 목업 실행 상태
-- `/api/debug/sample?kind=rent|trade&lawdCd=11110&ym=202607`: 기본 비활성화(404). 별도 승인 후 로컬에서만 키·플래그를 설정하여 확인하고, 실제 필드명 확인이 끝나면 삭제할 임시 라우트입니다.
+- `/api/month?kind=rent|trade&lawdCd=11110&ym=202606`: 한 지역의 한 달 실거래 내역. 브라우저가 월별로 병렬 호출하고 집계는 클라이언트에서 합니다.
 
 ## 데이터 구조 및 출처
 
