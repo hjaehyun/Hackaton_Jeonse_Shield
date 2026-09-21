@@ -153,6 +153,15 @@ function renderDistribution(stats, deposit) {
   const x = (value) => 25 + ((value - low) / span) * 350;
   const marker = x(deposit);
   const anchor = marker < 90 ? 'start' : marker > 310 ? 'end' : 'middle';
+  // Label the whisker ends, not the padded axis bounds. The padding exists only
+  // to keep the deposit marker on screen; printing it would put numbers on the
+  // chart that appear nowhere in the data and contradict the table below.
+  const endLabel = (value) => {
+    const at = x(value);
+    const clamped = Math.max(30, Math.min(370, at));
+    const align = at < 60 ? 'start' : at > 340 ? 'end' : 'middle';
+    return `<text x="${clamped}" y="137" text-anchor="${align}">${format(value)}</text>`;
+  };
   return `<svg class="box-plot" viewBox="0 0 400 153" role="img" aria-label="매매 분포: 최저 ${money(stats.min)}, 하위25% ${money(stats.q1)}, 중위 ${money(stats.median)}, 상위25% ${money(stats.q3)}, 최고 ${money(stats.max)}. 내 보증금 ${money(deposit)}.">
     <line x1="25" y1="115" x2="375" y2="115" stroke="#e6ebe8"/>
     <line x1="${x(stats.min)}" y1="84" x2="${x(stats.max)}" y2="84" stroke="#9db7a9" stroke-width="2"/>
@@ -164,7 +173,7 @@ function renderDistribution(stats, deposit) {
     <circle cx="${marker}" cy="44" r="4" fill="#1b2a4a"/>
     <text class="deposit-text" x="${marker}" y="20" text-anchor="${anchor}">내 보증금</text>
     <text class="deposit-text" x="${marker}" y="35" text-anchor="${anchor}">${money(deposit)}</text>
-    <text x="25" y="137">${format(Math.round(low))}</text><text x="375" y="137" text-anchor="end">${format(Math.round(high))} 만원</text>
+    ${endLabel(stats.min)}${endLabel(stats.max)}
     </svg>
     <dl class="distribution-stats">${[['최저', stats.min], ['하위25%', stats.q1], ['중위', stats.median], ['상위25%', stats.q3], ['최고', stats.max]].map(([label, price]) => `<div><dt>${label}</dt><dd>${format(price)}</dd></div>`).join('')}</dl>
     <p class="distribution-note">25%·75%는 실제 관측값(nearest-rank)을 사용합니다.<br>내 보증금 마커는 매매가와의 비교이며 전월세 백분위가 아닙니다.</p>`;

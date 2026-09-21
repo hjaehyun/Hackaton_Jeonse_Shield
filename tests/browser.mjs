@@ -91,6 +91,28 @@ try {
     const tallestTick = Math.max(...tickBoxes.map((t) => t.height));
     assert.ok(tallestTick < 24, `gauge tick wrapped: ${JSON.stringify(tickBoxes)}`);
     results.push({ check: `${width}px gauge ticks stay on one line`, result: 'pass', tallestTick });
+
+    // Every number printed on the chart must be an observed value. Padded axis
+    // bounds look like data and contradict the statistics table below them.
+    const chartNumbers = await page.locator('.box-plot text').evaluateAll(
+      (els) => els.map((el) => el.textContent.trim()).filter((t) => /\d/.test(t)),
+    );
+    const tableNumbers = await page.locator('.distribution-stats dd').evaluateAll(
+      (els) => els.map((el) => el.textContent.trim()),
+    );
+    const depositLabel = await page.locator('#deposit-input').inputValue();
+    const allowed = new Set([...tableNumbers, new Intl.NumberFormat('ko-KR').format(Number(depositLabel))]);
+    const invented = chartNumbers.filter((n) => ![...allowed].some((a) => n.includes(a)));
+    assert.deepEqual(invented, [], `chart shows numbers absent from the statistics table: ${JSON.stringify({ chartNumbers, tableNumbers })}`);
+    results.push({ check: `${width}px chart prints only observed values`, result: 'pass', chartNumbers });
+
+    // The fixed footer carries the standing legal notice. Repeating it in the
+    // report body costs a screenful on mobile and tells the reader nothing new.
+    const noticeCount = await page.evaluate(
+      () => document.body.innerText.split('참고용 정보이며 법률 자문이 아닙니다').length - 1,
+    );
+    assert.equal(noticeCount, 1, 'the legal notice appears more than once on the result screen');
+    results.push({ check: `${width}px legal notice appears once`, result: 'pass' });
     await fit(page, `${width}px result 12 samples`);
     if ([360, 1440].includes(width)) await capture(page, `result-${width}`);
     await page.locator('.check-item input').first().check();

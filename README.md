@@ -105,10 +105,21 @@ Hono / 순수 JavaScript / Vite Pages 빌드 / Cloudflare Workers / 직접 그�
 
 ## 스크린샷
 
-`artifacts/landing-360.png`, `artifacts/wizard-360.png`, `artifacts/result-360.png`에 모바일 캡처가 있습니다. `1440` 버전은 데스크톱, `-full` 버전은 전체 문서 캡처입니다. 고정 푸터는 실제 화면 하단에 고정되며 전체 문서 캡처에서는 뷰포트 높이 위치에 나타납니다.
+| 랜딩 | 입력 위저드 | 결과 리포트 |
+|---|---|---|
+| ![랜딩](docs/screenshots/landing-360.png) | ![입력 위저드](docs/screenshots/wizard-360.png) | ![결과 리포트](docs/screenshots/result-360.png) |
+
+`docs/screenshots/`의 이미지는 `node tests/browser.mjs`가 `artifacts/`에 남긴 캡처에서 가져온 것입니다. 화면을 바꾼 뒤에는 테스트를 실행하고 세 파일을 다시 복사해 주세요.
 
 ## 검증과 보고서
 
-단위·라우트 20개 통과. Chromium 360/390/768/1440px의 브라우저 검사 36개 통과. 가로 넘침·입력 검사·표본 부족·월세·100% 초과·체크리스트·XSS·세종·네트워크 오류를 검증했습니다. 사용자 지정 9개 항목 보고서, 첫 2개 시도 JSON, 키 노출 검사 전체 원문은 `REPORT.md`에 있습니다. 상세 증빙은 `artifacts/`를 참조하세요.
+단위·라우트 36개 통과. Chromium 360/390/768/1440px의 브라우저 검사 48개 통과. 가로 넘침·입력 검사·표본 부족·월세·100% 초과·체크리스트·XSS·세종·네트워크 오류, 게이지 눈금 줄바꿈, 차트에 표에 없는 숫자가 나오지 않는지, 법적 고지가 한 번만 표시되는지를 검증합니다.
+
+```sh
+npm test               # 단위·라우트
+node tests/browser.mjs # 브라우저 (결과는 artifacts/ 에 기록)
+```
+
+`artifacts/`는 테스트 실행 때마다 새로 쓰이는 산출물이라 저장소에 포함하지 않습니다. 1일차 작업 보고서는 `REPORT.md`에 있습니다.
 
 MIT License. 본 서비스는 참고용 정보이며 법률 자문이 아닙니다.
