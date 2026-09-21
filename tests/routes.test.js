@@ -166,3 +166,67 @@ test('unknown API paths return JSON 404', async () => {
   const response = await app.request('/api/not-existing');
   assert.equal(response.status, 404);
 });
+
+const LAW_SEARCH = JSON.stringify({
+  PrecSearch: {
+    totalCnt: 1,
+    prec: [{
+      판례일련번호: '618185', 사건명: '배당이의', 사건번호: '2025다210305',
+      선고일자: '2026.02.26', 법원명: '대법원',
+    }],
+  },
+});
+const LAW_BODY = JSON.stringify({
+  PrecService: { 판시사항: '대항력이 언제 소멸하는지 여부(적극)', 참조조문: '주택임대차보호법 제3조' },
+});
+
+function lawEnv(overrides = {}) {
+  return {
+    LAW_OC: 'test',
+    __TEST_FETCH__: async (url) => ({
+      ok: true,
+      status: 200,
+      text: async () => (String(url).includes('lawSearch.do') ? LAW_SEARCH : LAW_BODY),
+    }),
+    ...overrides,
+  };
+}
+
+test('/api/law returns the topic guidance and its precedents', async () => {
+  const response = await app.request('/api/law?topic=opposing-power', {}, lawEnv());
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.topic, 'opposing-power');
+  assert.equal(body.label, '대항력');
+  assert.ok(body.guidance.length > 20);
+  assert.equal(body.precedents.length, 1);
+  assert.equal(body.precedents[0].caseNumber, '2025다210305');
+  assert.ok(body.precedents[0].link.includes('precInfoP.do'));
+});
+
+test('/api/law rejects an unknown topic before calling upstream', async () => {
+  let called = false;
+  const response = await app.request('/api/law?topic=nope', {}, lawEnv({
+    __TEST_FETCH__: async () => { called = true; },
+  }));
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, 'INVALID_PARAMETERS');
+  assert.equal(called, false);
+});
+
+test('/api/law needs no service key, only the law account id', async () => {
+  // DATA_GO_KR_KEY is absent here on purpose: the precedent API does not use it.
+  const response = await app.request('/api/law?topic=priority', {}, lawEnv());
+  assert.equal(response.status, 200);
+});
+
+test('a law lookup failure surfaces as 502 without leaking the account id', async () => {
+  const response = await app.request('/api/law?topic=renewal', {}, lawEnv({
+    LAW_OC: 'SECRET_OC_VALUE',
+    __TEST_FETCH__: async () => { throw new TypeError('fetch failed'); },
+  }));
+  assert.equal(response.status, 502);
+  const text = await response.text();
+  assert.equal(JSON.parse(text).error, 'UPSTREAM_UNAVAILABLE');
+  assert.ok(!text.includes('SECRET_OC_VALUE'));
+});

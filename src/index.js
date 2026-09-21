@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { fetchMonth, UpstreamError } from './lib/rtms-client.js';
+import { fetchTopic, LawUnavailableError } from './lib/law-client.js';
+import { TOPICS } from './lib/law.js';
 
 const app = new Hono();
 
@@ -70,6 +72,26 @@ app.get('/api/month', async (c) => {
     // Not a transport failure — a bug in our own code. Still no detail in the
     // body, but the name is key-free and worth recording.
     console.error('unexpected error in /api/month:', error?.name);
+    return c.json({ error: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// Precedents for one topic. Separate from /api/month because it uses a
+// different upstream, a different credential, and a week-long cache: court
+// decisions do not change, transaction filings do.
+app.get('/api/law', async (c) => {
+  const topic = c.req.query('topic') ?? '';
+  if (!Object.hasOwn(TOPICS, topic)) return c.json({ error: 'INVALID_PARAMETERS' }, 400);
+
+  try {
+    const result = await fetchTopic(c.env, executionCtxOrNull(c), topic, transport(c.env));
+    c.header('Cache-Control', 'public, max-age=86400');
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof LawUnavailableError) {
+      return c.json({ error: 'UPSTREAM_UNAVAILABLE', reason: error.code }, 502);
+    }
+    console.error('unexpected error in /api/law:', error?.name);
     return c.json({ error: 'INTERNAL_ERROR' }, 500);
   }
 });
