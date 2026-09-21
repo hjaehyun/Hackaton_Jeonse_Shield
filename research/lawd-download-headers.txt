@@ -1,0 +1,15 @@
+HTTP/1.1 200 OK
+Date: Mon, 21 Sep 2026 01:46:09 GMT
+Content-Type: application/octet-stream;;charset=utf-8
+Content-Length: 413346
+Connection: keep-alive
+Keep-Alive: timeout=3600
+Server: Apache
+Set-Cookie: [REDACTED — public-download session cookie not retained]
+Content-Disposition: attachment;filename="법정동코드 전체자료.zip";
+Content-Transfer-Encoding: binary;
+Pragma: no-cache;
+Expires: -1;
+Content-Language: en-US
+Set-Cookie: [REDACTED — public-download routing cookie not retained]
+

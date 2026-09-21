@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jeonse-shield",
+  "compatibility_date": "2026-09-01",
+  "pages_build_output_dir": "./dist",
+  "vars": {
+    "ENABLE_API_DEBUG": "false"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jeonse-shield",
+      "database_id": "b0f9e541-9ed1-4943-9a0e-75b934815f64"
+    }
+  ]
+}

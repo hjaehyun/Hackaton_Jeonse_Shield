@@ -1,0 +1,22 @@
+{
+  "source": "https://www.code.go.kr/etc/codeFullDown.do",
+  "sourcePage": "https://www.code.go.kr/stdcode/regCodeL.do",
+  "downloadMethod": "POST codeseId=법정동코드",
+  "downloadedOn": "2026-09-21",
+  "archiveEntryDate": "2026-09-17",
+  "officialEffectiveDate": "미확인 — ZIP 파일 시각과 시행 기준일은 구분함",
+  "sha256": "44b96f4a86ad102057463a05aae8842f1d706d3e9e69d2dfc409023bf75ca56b",
+  "sourceRows": 53387,
+  "activeSuffixRows": 284,
+  "sidoCount": 16,
+  "itemCount": 269,
+  "bytes": 20192,
+  "gzipBytes": 2428,
+  "sejongCode": "36110",
+  "notes": [
+    "시도 자체 행은 그룹명으로만 사용",
+    "하위 구가 있는 시의 상위 시 코드도 추출 규칙에 따라 유지",
+    "공백만 정리하며 행정구역 명칭과 코드는 공식 원본을 유지",
+    "실거래가 API의 개별 코드 지원 여부는 미확인"
+  ]
+}

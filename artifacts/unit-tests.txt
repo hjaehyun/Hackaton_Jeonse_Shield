@@ -1,0 +1,134 @@
+
+> test
+> node --test tests/*.test.js
+
+TAP version 13
+# Subtest: 0 samples return null and unknown verdict
+ok 1 - 0 samples return null and unknown verdict
+  ---
+  duration_ms: 3.41446
+  type: 'test'
+  ...
+# Subtest: 2 samples cannot produce a displayable verdict or distribution
+ok 2 - 2 samples cannot produce a displayable verdict or distribution
+  ---
+  duration_ms: 0.484047
+  type: 'test'
+  ...
+# Subtest: 5 samples: exact median, sample count and ratio
+ok 3 - 5 samples: exact median, sample count and ratio
+  ---
+  duration_ms: 1.041811
+  type: 'test'
+  ...
+# Subtest: verdict boundary 59.9 -> safe
+ok 4 - verdict boundary 59.9 -> safe
+  ---
+  duration_ms: 0.25741
+  type: 'test'
+  ...
+# Subtest: verdict boundary 60 -> ok
+ok 5 - verdict boundary 60 -> ok
+  ---
+  duration_ms: 0.240427
+  type: 'test'
+  ...
+# Subtest: verdict boundary 69.9 -> ok
+ok 6 - verdict boundary 69.9 -> ok
+  ---
+  duration_ms: 0.129373
+  type: 'test'
+  ...
+# Subtest: verdict boundary 70 -> caution
+ok 7 - verdict boundary 70 -> caution
+  ---
+  duration_ms: 0.269043
+  type: 'test'
+  ...
+# Subtest: verdict boundary 79.9 -> caution
+ok 8 - verdict boundary 79.9 -> caution
+  ---
+  duration_ms: 0.13359
+  type: 'test'
+  ...
+# Subtest: verdict boundary 80 -> danger
+ok 9 - verdict boundary 80 -> danger
+  ---
+  duration_ms: 0.368995
+  type: 'test'
+  ...
+# Subtest: verdict boundary 120 -> danger
+ok 10 - verdict boundary 120 -> danger
+  ---
+  duration_ms: 0.437199
+  type: 'test'
+  ...
+# Subtest: even sample median averages central observed values
+ok 11 - even sample median averages central observed values
+  ---
+  duration_ms: 0.232332
+  type: 'test'
+  ...
+# Subtest: area includes exact +/-10 percent and excludes everything beyond
+ok 12 - area includes exact +/-10 percent and excludes everything beyond
+  ---
+  duration_ms: 0.401109
+  type: 'test'
+  ...
+# Subtest: invalid areas / deposits / prices never introduce non-finite values
+ok 13 - invalid areas / deposits / prices never introduce non-finite values
+  ---
+  duration_ms: 0.338432
+  type: 'test'
+  ...
+# Subtest: input array and objects are unchanged
+ok 14 - input array and objects are unchanged
+  ---
+  duration_ms: 0.235172
+  type: 'test'
+  ...
+# Subtest: nearest-rank quartiles never interpolate
+ok 15 - nearest-rank quartiles never interpolate
+  ---
+  duration_ms: 0.223309
+  type: 'test'
+  ...
+# Subtest: health endpoint explicitly identifies mock mode
+ok 16 - health endpoint explicitly identifies mock mode
+  ---
+  duration_ms: 44.007001
+  type: 'test'
+  ...
+# Subtest: debug route remains disabled even when a binding exists
+ok 17 - debug route remains disabled even when a binding exists
+  ---
+  duration_ms: 2.481503
+  type: 'test'
+  ...
+# Subtest: enabled debug without a key fails closed without fetching
+ok 18 - enabled debug without a key fails closed without fetching
+  ---
+  duration_ms: 0.70098
+  type: 'test'
+  ...
+# Subtest: enabled debug rejects unsupported query values before fetching
+ok 19 - enabled debug rejects unsupported query values before fetching
+  ---
+  duration_ms: 2.01104
+  type: 'test'
+  ...
+# Subtest: unknown API paths return JSON 404
+ok 20 - unknown API paths return JSON 404
+  ---
+  duration_ms: 17.98422
+  type: 'test'
+  ...
+1..20
+# tests 20
+# suites 0
+# pass 20
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 363.950401
