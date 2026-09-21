@@ -1,5 +1,5 @@
 {
-  "name": "webapp",
+  "name": "jeonse-shield",
   "type": "module",
   "scripts": {
     "dev": "vite",

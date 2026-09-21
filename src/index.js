@@ -25,8 +25,10 @@ app.get('/api/debug/sample', async (c) => {
   if (!['rent', 'trade'].includes(kind) || !/^\d{5}$/.test(lawdCd) || !/^\d{4}(0[1-9]|1[0-2])$/.test(ym)) {
     return c.json({ error: 'INVALID_PARAMETERS' }, 400);
   }
+  // RTMSDataSvcAptTradeDev ("상세 자료") is a separate dataset and answers 403
+  // for this service key. The plain AptTrade endpoint is the one we hold.
   const endpoint = kind === 'trade'
-    ? 'https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev'
+    ? 'https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade'
     : 'https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent';
   const url = new URL(endpoint);
   url.searchParams.set('serviceKey', c.env.DATA_GO_KR_KEY);

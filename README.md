@@ -4,16 +4,30 @@
 
 ## 실행 방법
 
+Node.js 20 이상이 필요합니다.
+
 ```sh
 npm ci
 npm run build
-pm2 start ecosystem.config.cjs
-npm test
-node tests/browser.mjs
+npm run dev:sandbox
 ```
 
 로컬 주소: http://localhost:3000
+
+테스트:
+
+```sh
+npm test                      # 단위·라우트 테스트
+node tests/browser.mjs        # 브라우저 검사
+```
+
 브라우저 테스트 최초 준비: `npx playwright install --with-deps chromium`
+
+백그라운드로 띄우려면 pm2를 쓸 수 있습니다(선택).
+
+```sh
+npx pm2 start ecosystem.config.cjs
+```
 
 ## 기술 스택
 
@@ -39,7 +53,10 @@ Hono / 순수 JavaScript / Vite Pages 빌드 / Cloudflare Workers / 직접 그�
 ## 데이터 구조 및 출처
 
 - 거래: `{ name, area, price }`, 가상 단일 단지, 14건. 매매 `price`는 만원.
-- 법정동: `[{ sido, items: [{ code, name }] }]`. 공식 원본 53,387행에서 필터링하여 16개 시도 그룹·269개 선택 항목. 시도 자체 행은 그룹 제목이며, 세종 36110 포함. 하위 구가 있는 시의 상위 코드도 지시서 규칙에 따라 유지했습니다.
+- 법정동: `[{ sido, items: [{ code, name }] }]`. 공식 원본 53,387행에서 필터링하여 16개 시도 그룹·256개 선택 항목. 시도 자체 행은 그룹 제목이며, 세종 36110 포함.
+- 자치구를 가진 시의 상위 코드 13개(수원·성남·안양·부천·안산·고양·용인·화성·청주·천안·포항·창원·전주)는 **제외**했습니다. 실거래가 API가 이들 코드에 `totalCount=0`으로 응답합니다. 데이터는 자치구 코드에만 있습니다.
+- 행정구역 개편 이후 **신설 코드가 정답**입니다. API가 과거 거래까지 신설 코드로 마이그레이션해 두었습니다. 예) 광주 서구 신 `12240` 355건 / 구 `29155` 0건.
+- 위 두 항목은 2026-09-21 실제 키로 전수 실측해 확인했습니다.
 - 공식 원본: https://www.code.go.kr/stdcode/regCodeL.do — 2026-09-21 수집, ZIP 내부 파일 시각 2026-09-17. 개별 코드 시행 기준일은 미확인.
 - 재생성: `python scripts/extract-lawd.py`. 원본과 메타데이터는 `research/`.
 - 예정 API: 국토교통부 아파트 전월세/매매 실거래가(https://www.data.go.kr), 법제처 국가법령정보 공동활용(https://open.law.go.kr).
@@ -56,9 +73,35 @@ Hono / 순수 JavaScript / Vite Pages 빌드 / Cloudflare Workers / 직접 그�
 - 정적 파일: 빌드 시 `public/`을 `dist/`로 복사, Pages 및 Hosted의 네이티브 `ASSETS.fetch`로 서빙. KV manifest 기반의 구형 Workers static helper는 사용하지 않음. Hono 빌드 옵션 `emptyOutDir: true`로 오래된 출력 정리.
 - 시크릿: 로컬은 무시되는 `.dev.vars`의 env 바인딩. 호스팅은 `gsk hosted secret_put` 지원을 확인했지만 실제 키 주입·읽힘은 미확인. 호스팅 시크릿 목록 0개 확인. 키는 프론트엔드·소스·설정에 넣지 않음.
 
+## 실거래가 API 확인 결과 (2026-09-21)
+
+실제 서비스키로 호출해 확인한 사실입니다.
+
+| 엔드포인트 | 결과 |
+|---|---|
+| `RTMSDataSvcAptRent/getRTMSDataSvcAptRent` | 200 |
+| `RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade` | 200 |
+| `RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev` | **403** — "상세 자료"는 별도 API |
+| `RTMSDataSvcRHRent`, `RTMSDataSvcRHTrade` | 200 |
+
+응답 필드명은 모두 영문입니다.
+
+- 전월세: `aptNm`, `aptSeq`, `excluUseAr`, `deposit`, `monthlyRent`, `floor`, `dealYear`/`dealMonth`/`dealDay`, `umdNm`, `sggCd`, `buildYear`, `contractTerm`, `contractType`
+- 매매: `aptNm`, `aptDong`, `excluUseAr`, `dealAmount`, `floor`, `dealYear`/`dealMonth`/`dealDay`, `umdNm`, `sggCd`, `cdealDay`, `cdealType`, `dealingGbn`
+- 연립다세대는 단지명이 `mhouseNm`이며 `houseType`, `landAr`이 추가됩니다.
+
+금액(`deposit`, `dealAmount`)은 만원 단위이며 `96,000`처럼 콤마가 포함됩니다.
+
+연동 시 주의할 점 두 가지입니다.
+
+1. **매매 응답에는 `aptSeq`가 없습니다.** 전월세와 매매를 잇는 키가 `aptNm` 문자열뿐이므로 단지 매칭은 이름 정규화(괄호·공백·특수문자 제거)에 의존해야 합니다.
+2. **해제된 거래가 섞여 있습니다.** `cdealType`이 `해제`인 행은 취소된 거래이므로 중위가 계산 전에 제외해야 합니다.
+
+`Access-Control-Allow-Origin`은 200 응답에도 요청 Origin을 에코합니다. 브라우저 직접 호출은 가능하지만, 서비스키 노출을 막기 위해 서버 프록시를 유지합니다.
+
 ## 미구현 및 다음 단계
 
-실제 API와 XML 필드명 검증, 정규화, 법령·판례 조회, LLM 요약, D1 캐시, 단지 자동완성은 내일 이후 범위입니다. 로그인·결과 저장·지도·아파트 외 주택은 오늘 구현하지 않습니다. 우선 실제 키와 제한된 디버그 검사 승인 후 필드명을 확정하고 임시 라우트를 삭제해야 합니다.
+실제 API 연동과 정규화, 법령·판례 조회, LLM 요약, D1 캐시, 단지 자동완성은 다음 단계입니다. 로그인·결과 저장·지도·아파트 외 주택은 범위 밖입니다. 필드명은 확정되었으므로 임시 디버그 라우트는 연동 완료 후 삭제합니다.
 
 ## 스크린샷
 
