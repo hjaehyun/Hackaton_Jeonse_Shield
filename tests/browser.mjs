@@ -80,6 +80,17 @@ try {
     assert.match(await page.locator('.ratio-value').innerText(), /58\.3/);
     assert.equal(await page.locator('#ratio-card').getAttribute('data-verdict'), 'safe');
     assert.equal(await page.locator('#sample-count').innerText(), '표본 12건');
+    // The last gauge tick sits at left:100%, where the available width is 0.
+    // Without white-space:nowrap it shrink-wraps to one character per line.
+    const tickBoxes = await page.locator('.gauge-ticks > span').evaluateAll(
+      (els) => els.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { text: el.textContent.trim(), width: r.width, height: r.height };
+      }),
+    );
+    const tallestTick = Math.max(...tickBoxes.map((t) => t.height));
+    assert.ok(tallestTick < 24, `gauge tick wrapped: ${JSON.stringify(tickBoxes)}`);
+    results.push({ check: `${width}px gauge ticks stay on one line`, result: 'pass', tallestTick });
     await fit(page, `${width}px result 12 samples`);
     if ([360, 1440].includes(width)) await capture(page, `result-${width}`);
     await page.locator('.check-item input').first().check();

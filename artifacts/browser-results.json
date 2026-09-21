@@ -1,6 +1,6 @@
 {
   "status": "passed",
-  "total": 36,
+  "total": 40,
   "results": [
     {
       "check": "360px landing",
@@ -29,6 +29,11 @@
       "viewport": 360,
       "document": 360,
       "body": 360
+    },
+    {
+      "check": "360px gauge ticks stay on one line",
+      "result": "pass",
+      "tallestTick": 14.84375
     },
     {
       "check": "360px result 12 samples",
@@ -87,6 +92,11 @@
       "body": 390
     },
     {
+      "check": "390px gauge ticks stay on one line",
+      "result": "pass",
+      "tallestTick": 14.84375
+    },
+    {
       "check": "390px result 12 samples",
       "result": "pass",
       "viewport": 390,
@@ -143,6 +153,11 @@
       "body": 768
     },
     {
+      "check": "768px gauge ticks stay on one line",
+      "result": "pass",
+      "tallestTick": 14.84375
+    },
+    {
       "check": "768px result 12 samples",
       "result": "pass",
       "viewport": 768,
@@ -197,6 +212,11 @@
       "viewport": 1440,
       "document": 1440,
       "body": 1440
+    },
+    {
+      "check": "1440px gauge ticks stay on one line",
+      "result": "pass",
+      "tallestTick": 14.84375
     },
     {
       "check": "1440px result 12 samples",
