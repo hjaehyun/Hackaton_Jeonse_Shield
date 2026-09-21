@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "jeonse-shield",
   "compatibility_date": "2026-09-01",

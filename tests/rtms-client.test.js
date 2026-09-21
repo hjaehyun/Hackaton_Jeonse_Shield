@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  recentMonths, fetchMonth, fetchRange, UpstreamError, RENT_URL, TRADE_URL,
+  recentMonths, fetchMonth, UpstreamError, RENT_URL, TRADE_URL,
 } from '../src/lib/rtms-client.js';
 
 const ctx = { waitUntil: (p) => p };
@@ -25,6 +25,20 @@ test('recentMonths counts backwards from the given month, newest first', () => {
 
 test('recentMonths crosses the year boundary', () => {
   assert.deepEqual(recentMonths(3, new Date('2026-02-10T00:00:00Z')), ['202602', '202601', '202512']);
+});
+
+// Every user and every transaction is in KST. Reading the month in UTC loses
+// the first nine hours of each month for a Korean audience.
+test('recentMonths reads the month in Seoul time, not UTC', () => {
+  // 2026-10-01 08:00 KST is still 2026-09-30 23:00 UTC.
+  assert.equal(recentMonths(1, new Date('2026-09-30T23:00:00Z'))[0], '202610');
+  // 2026-09-30 23:00 KST is 14:00 UTC the same day — still September.
+  assert.equal(recentMonths(1, new Date('2026-09-30T14:00:00Z'))[0], '202609');
+});
+
+test('recentMonths crosses the year boundary in Seoul time', () => {
+  // 2027-01-01 05:00 KST is 2026-12-31 20:00 UTC.
+  assert.deepEqual(recentMonths(2, new Date('2026-12-31T20:00:00Z')), ['202701', '202612']);
 });
 
 test('the trade endpoint is the plain one, not the 403-only detail dataset', () => {
@@ -77,7 +91,9 @@ test('fetchMonth raises UpstreamError when a 200 body carries a fault code', asy
 
 test('an UpstreamError never carries the request URL or the service key', async () => {
   const error = await fetchMonth(env, ctx, 'rent', '41111', '202603', async () => {
-    throw new Error('boom https://apis.data.go.kr/x?serviceKey=TEST_KEY');
+    // What fetch throws when it cannot reach the host, with the URL in the
+    // message the way a real runtime would include it.
+    throw new TypeError('fetch failed https://apis.data.go.kr/x?serviceKey=TEST_KEY');
   }).then(() => null, (e) => e);
   assert.ok(error instanceof UpstreamError);
   const text = `${error.message} ${error.stack ?? ''} ${JSON.stringify(error)}`;
@@ -85,24 +101,20 @@ test('an UpstreamError never carries the request URL or the service key', async 
   assert.ok(!text.includes('serviceKey'), 'the request URL leaked into the error');
 });
 
-test('fetchRange asks for every month it was told to, newest first', async () => {
-  const asked = [];
-  const rows = await fetchRange(env, ctx, 'rent', '41111', 3, async (url) => {
-    asked.push(new URL(url).searchParams.get('DEAL_YMD'));
-    return { ok: true, status: 200, text: async () => RENT_BODY };
-  }, new Date('2026-09-21T00:00:00Z'));
-  assert.deepEqual(asked, ['202609', '202608', '202607']);
-  assert.equal(rows.length, 3);
+test('the reason label says which class of transport failure it was', async () => {
+  const error = await fetchMonth(env, ctx, 'rent', '41111', '202512', async () => {
+    throw new TypeError('fetch failed');
+  }).then(() => null, (e) => e);
+  assert.equal(error.reason, 'TypeError');
 });
 
-test('fetchRange propagates an upstream failure rather than returning a short list', async () => {
-  let call = 0;
-  await assert.rejects(
-    () => fetchRange(env, ctx, 'rent', '41112', 3, async () => {
-      call += 1;
-      if (call === 2) return { ok: false, status: 500, text: async () => '' };
-      return { ok: true, status: 200, text: async () => RENT_BODY };
-    }, new Date('2026-09-21T00:00:00Z')),
-    (e) => e instanceof UpstreamError,
-  );
+// The blanket catch that used to live here disguised redirect: 'error' —
+// rejected by workerd, accepted by Node — as an upstream outage on every live
+// request while all unit tests passed.
+test('a fault in our own code propagates instead of becoming an outage', async () => {
+  const error = await fetchMonth(env, ctx, 'rent', '41111', '202511', async () => {
+    throw new ReferenceError('someHelper is not defined');
+  }).then(() => null, (e) => e);
+  assert.ok(error instanceof ReferenceError, `expected the original error, got ${error?.name}`);
+  assert.ok(!(error instanceof UpstreamError));
 });

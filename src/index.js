@@ -1,4 +1,4 @@
-﻿import { Hono } from 'hono';
+import { Hono } from 'hono';
 import { fetchMonth, UpstreamError } from './lib/rtms-client.js';
 
 const app = new Hono();
@@ -27,6 +27,15 @@ function executionCtxOrNull(c) {
   }
 }
 
+// Tests inject a transport through this binding. The name is deliberately one
+// no real Worker binding would carry: a plain `fetchImpl` var or secret would
+// silently replace the transport with a string and turn every request into an
+// unexplained failure.
+function transport(env) {
+  const injected = env?.__TEST_FETCH__;
+  return typeof injected === 'function' ? injected : fetch;
+}
+
 // One region-month per request.
 //
 // CPU is budgeted per invocation, and a single month of one district can be
@@ -45,14 +54,19 @@ app.get('/api/month', async (c) => {
   if (!c.env?.DATA_GO_KR_KEY) return c.json({ error: 'KEY_NOT_CONFIGURED' }, 503);
 
   try {
-    // env.fetchImpl exists only so tests can inject a transport.
-    const rows = await fetchMonth(c.env, executionCtxOrNull(c), kind, lawdCd, ym, c.env.fetchImpl ?? fetch);
+    const rows = await fetchMonth(c.env, executionCtxOrNull(c), kind, lawdCd, ym, transport(c.env));
     return c.json({ kind, lawdCd, ym, rows });
   } catch (error) {
     // Never echo the cause. Both the request URL and anything fetch throws can
-    // contain the service key.
-    const code = error instanceof UpstreamError ? error.code : 'UPSTREAM_UNAVAILABLE';
-    return c.json({ error: code }, 502);
+    // contain the service key. UpstreamError.reason is a fixed label, safe to
+    // surface, and is what makes a 502 diagnosable without leaking anything.
+    if (error instanceof UpstreamError) {
+      return c.json({ error: error.code, reason: error.reason }, 502);
+    }
+    // Not a transport failure — a bug in our own code. Still no detail in the
+    // body, but the name is key-free and worth recording.
+    console.error('unexpected error in /api/month:', error?.name);
+    return c.json({ error: 'INTERNAL_ERROR' }, 500);
   }
 });
 

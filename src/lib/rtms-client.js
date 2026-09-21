@@ -13,26 +13,49 @@ export const TRADE_URL = 'https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/ge
 const ENDPOINT = { rent: RENT_URL, trade: TRADE_URL };
 const NORMALIZE = { rent: normalizeRent, trade: normalizeTrade };
 
-// Kept low on purpose: parsing is what spends the 10ms CPU budget.
+// KNOWN LIMITATION — tracked, not fixed.
+//
+// This takes the first page only. Busy districts return far more than this:
+// Gangnam-gu had 2,096 rent transactions in 202606, of which we keep 200. The
+// rows dropped are the tail of the month rather than a random sample, so the
+// median we compute is biased, and the median is the denominator of the jeonse
+// ratio. Fixing it means reading totalCount and paging, and re-measuring the
+// CPU cost of parsing a full month. Until then the number shown for a busy
+// district is computed from a partial month.
 const ROWS_PER_MONTH = '200';
+
+// Bumped whenever the shape or completeness of a cached body changes, so a
+// fix does not keep serving yesterday's rows for a day.
+const CACHE_VERSION = 'v1';
+
 const CACHE_TTL_SECONDS = 86400;
 const TIMEOUT_MS = 8000;
 
+const SEOUL_OFFSET_MS = 9 * 60 * 60 * 1000;
+
 export class UpstreamError extends Error {
-  constructor() {
-    // Carries no cause and no detail. The request URL and any thrown message
-    // from fetch can both contain the service key.
+  /** @param {string} reason Short, key-free label for what went wrong. */
+  constructor(reason = 'unknown') {
+    // Carries no cause and no detail beyond the label. The request URL and any
+    // thrown message from fetch can both contain the service key.
     super('upstream request failed');
     this.name = 'UpstreamError';
     this.code = 'UPSTREAM_UNAVAILABLE';
+    this.reason = reason;
   }
 }
 
-/** `['202609', '202608', ...]`, newest first, counting back from `now`. */
+/**
+ * `['202609', '202608', ...]`, newest first, counting back from `now`.
+ *
+ * Months are read in Asia/Seoul. Every user and every transaction is in KST,
+ * so reading them in UTC would drop the first nine hours of each month.
+ */
 export function recentMonths(count, now = new Date()) {
+  const seoul = new Date(now.getTime() + SEOUL_OFFSET_MS);
   const months = [];
-  let year = now.getUTCFullYear();
-  let month = now.getUTCMonth() + 1;
+  let year = seoul.getUTCFullYear();
+  let month = seoul.getUTCMonth() + 1;
   for (let i = 0; i < count; i += 1) {
     months.push(`${year}${String(month).padStart(2, '0')}`);
     month -= 1;
@@ -43,6 +66,15 @@ export function recentMonths(count, now = new Date()) {
   }
   return months;
 }
+
+// Errors we expect from a healthy codebase talking to an unhealthy network.
+// Anything else is a bug in this file and must not be disguised as an outage.
+const NETWORK_ERROR_NAMES = new Set([
+  'TypeError',        // fetch could not reach the host
+  'AbortError',       // our own timeout fired
+  'TimeoutError',     // AbortSignal.timeout in some runtimes
+  'NetworkError',
+]);
 
 async function callUpstream(env, kind, lawdCd, ym, fetchImpl) {
   const url = new URL(ENDPOINT[kind]);
@@ -65,47 +97,36 @@ async function callUpstream(env, kind, lawdCd, ym, fetchImpl) {
       redirect: 'manual',
     });
     xml = await response.text();
-  } catch {
-    // Deliberately swallowing the cause: see UpstreamError.
-    throw new UpstreamError();
+  } catch (error) {
+    // A blanket catch here once disguised redirect:'error' — rejected by
+    // workerd, accepted by Node — as an upstream outage for every live
+    // request while all unit tests passed. Only transport failures are
+    // translated; a bug in this function propagates so it can be seen.
+    if (!NETWORK_ERROR_NAMES.has(error?.name)) throw error;
+    throw new UpstreamError(error.name);
   }
 
   // data.go.kr returns faults inside a 200 body as often as it uses a status
   // code, so checking response.ok alone silently yields an empty list.
-  if (!response.ok || /<returnReasonCode>/.test(xml)) throw new UpstreamError();
+  if (!response.ok) throw new UpstreamError(`http_${response.status}`);
+  if (/<returnReasonCode>/.test(xml)) throw new UpstreamError('fault_body');
 
-  return parseItems(xml).map(NORMALIZE[kind]).filter(Boolean);
+  return parseItems(xml).map((row) => NORMALIZE[kind](row)).filter(Boolean);
 }
 
 /**
  * One region-month of transactions, cached for a day.
- * Cancelled trades are left in — the caller decides whether to count or drop
- * them, and `/api/complex` reports how many it dropped.
+ *
+ * Cancelled trades are left in. Dropping them is the caller's decision, and
+ * the client-side aggregation in `public/lib/aggregate.js` reports how many it
+ * dropped rather than discarding them silently.
  */
 export function fetchMonth(env, ctx, kind, lawdCd, ym, fetchImpl = fetch) {
   return cached(
     env,
     ctx,
-    `${kind}:${lawdCd}:${ym}`,
+    `${CACHE_VERSION}:${kind}:${lawdCd}:${ym}`,
     CACHE_TTL_SECONDS,
     () => callUpstream(env, kind, lawdCd, ym, fetchImpl),
   );
-}
-
-/**
- * The last `months` months of transactions for one region.
- *
- * Sequential on purpose. The subrequest ceiling is 50 per request and `months`
- * is capped at 12, so there is room, and running them in series keeps a cold
- * region from opening a dozen sockets at once.
- *
- * A failure on any month throws rather than returning a short list: a silently
- * truncated range would move the median.
- */
-export async function fetchRange(env, ctx, kind, lawdCd, months, fetchImpl = fetch, now = new Date()) {
-  const rows = [];
-  for (const ym of recentMonths(months, now)) {
-    rows.push(...await fetchMonth(env, ctx, kind, lawdCd, ym, fetchImpl));
-  }
-  return rows;
 }

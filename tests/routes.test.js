@@ -15,7 +15,7 @@ const TRADE_BODY = `<response><header><resultCode>000</resultCode></header><body
 function stubEnv(overrides = {}) {
   return {
     DATA_GO_KR_KEY: 'TEST_KEY',
-    fetchImpl: async (url) => ({
+    __TEST_FETCH__: async (url) => ({
       ok: true,
       status: 200,
       text: async () => (String(url).includes('AptRent') ? RENT_BODY : TRADE_BODY),
@@ -59,7 +59,7 @@ test('/api/month keeps cancelled trades so the client can count them', async () 
 test('/api/month rejects a bad kind, region code or month before calling upstream', async () => {
   let called = false;
   const env = stubEnv({
-    fetchImpl: async () => { called = true; return { ok: true, status: 200, text: async () => '' }; },
+    __TEST_FETCH__: async () => { called = true; return { ok: true, status: 200, text: async () => '' }; },
   });
   for (const query of [
     'kind=nope&lawdCd=11110&ym=202606',
@@ -80,29 +80,73 @@ test('/api/month rejects a bad kind, region code or month before calling upstrea
 test('/api/month fails closed when the key is missing', async () => {
   let called = false;
   const response = await app.request('/api/month?kind=rent&lawdCd=11110&ym=202606', {}, {
-    fetchImpl: async () => { called = true; },
+    __TEST_FETCH__: async () => { called = true; },
   });
   assert.equal(response.status, 503);
   assert.equal((await response.json()).error, 'KEY_NOT_CONFIGURED');
   assert.equal(called, false);
 });
 
-test('an upstream failure surfaces as 502 without leaking the key', async () => {
+test('a transport failure surfaces as 502 without leaking the key', async () => {
   const env = stubEnv({
     DATA_GO_KR_KEY: 'SECRET_KEY_VALUE',
-    fetchImpl: async () => { throw new Error('connect ECONNREFUSED'); },
+    // What fetch actually throws when it cannot reach the host.
+    __TEST_FETCH__: async () => { throw new TypeError('fetch failed'); },
   });
   const response = await app.request('/api/month?kind=rent&lawdCd=11110&ym=202603', {}, env);
   assert.equal(response.status, 502);
   const text = await response.text();
-  assert.equal(JSON.parse(text).error, 'UPSTREAM_UNAVAILABLE');
+  const body = JSON.parse(text);
+  assert.equal(body.error, 'UPSTREAM_UNAVAILABLE');
+  assert.equal(body.reason, 'TypeError', 'the 502 must say which class of failure it was');
   assert.ok(!text.includes('SECRET_KEY_VALUE'));
   assert.ok(!text.includes('serviceKey'));
+  assert.ok(!text.includes('fetch failed'), 'the thrown message must not reach the body');
+});
+
+test('our own bug is not disguised as an upstream outage', async () => {
+  // redirect: 'error' was rejected by workerd and accepted by Node, so a
+  // blanket catch reported a code defect as an outage on every live request
+  // while every test passed. A non-transport error must look different.
+  const env = stubEnv({
+    DATA_GO_KR_KEY: 'SECRET_KEY_VALUE',
+    __TEST_FETCH__: async () => { throw new ReferenceError('someHelper is not defined'); },
+  });
+  const response = await app.request('/api/month?kind=rent&lawdCd=11110&ym=202601', {}, env);
+  assert.equal(response.status, 500);
+  const text = await response.text();
+  assert.equal(JSON.parse(text).error, 'INTERNAL_ERROR');
+  assert.ok(!text.includes('SECRET_KEY_VALUE'));
+  assert.ok(!text.includes('someHelper'), 'the thrown message must not reach the body');
+});
+
+test('an upstream 403 is reported with its status, not as a network failure', async () => {
+  const env = stubEnv({
+    __TEST_FETCH__: async () => ({ ok: false, status: 403, text: async () => '' }),
+  });
+  const response = await app.request('/api/month?kind=trade&lawdCd=11110&ym=202512', {}, env);
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).reason, 'http_403');
+});
+
+test('a non-function injected transport is ignored rather than called', async () => {
+  // A real binding named __TEST_FETCH__ would be a string. Calling it would
+  // throw TypeError and masquerade as an upstream outage.
+  const env = { DATA_GO_KR_KEY: 'TEST_KEY', __TEST_FETCH__: 'not-a-function' };
+  const original = globalThis.fetch;
+  let usedGlobal = false;
+  globalThis.fetch = async () => { usedGlobal = true; throw new TypeError('fetch failed'); };
+  try {
+    await app.request('/api/month?kind=rent&lawdCd=11110&ym=202511', {}, env);
+    assert.equal(usedGlobal, true, 'the route must fall back to the real fetch');
+  } finally {
+    globalThis.fetch = original;
+  }
 });
 
 test('a fault inside a 200 body is treated as a failure, not an empty month', async () => {
   const env = stubEnv({
-    fetchImpl: async () => ({
+    __TEST_FETCH__: async () => ({
       ok: true,
       status: 200,
       text: async () => '<response><header><returnReasonCode>30</returnReasonCode></header></response>',
