@@ -15,9 +15,16 @@ const TIMEOUT_MS = 12000;
 
 // Bumped whenever the prompt changes, so cached summaries from an older
 // instruction are not served alongside a new one.
-export const SUMMARY_VERSION = 'p1';
+export const SUMMARY_VERSION = 'p2';
 
 const MIN_LENGTH = 40;
+
+// Plain language is wordier than a court's, so a summary may legitimately run
+// longer than its source — a terse 158-character 판시사항 with two numbered
+// holdings needs more room, not less. What is being guarded against is the
+// model rambling or echoing the source with commentary, which an absolute cap
+// catches without discarding summaries that are doing their job.
+const MAX_LENGTH = 500;
 
 const NETWORK_ERROR_NAMES = new Set(['TypeError', 'AbortError', 'TimeoutError', 'NetworkError']);
 
@@ -42,14 +49,17 @@ export function buildPrompt(source) {
 
 /**
  * Returns the summary if it looks like one, otherwise null.
- * A summary longer than its source has stopped summarising; one short enough
- * to be an acknowledgement ('네, 알겠습니다') has lost the holding.
+ * Output short enough to be an acknowledgement ('네, 알겠습니다') has lost the
+ * holding; output past the cap has stopped summarising and started rambling.
+ *
+ * `source` is unused by the current rules but kept in the signature: the
+ * decision of what counts as a summary belongs with the text it summarises.
  */
 export function acceptSummary(text, source) {
   if (typeof text !== 'string') return null;
   const trimmed = text.trim().replace(/^["'“”]+|["'“”]+$/g, '').trim();
   if (trimmed.length < MIN_LENGTH) return null;
-  if (trimmed.length > source.length) return null;
+  if (trimmed.length > MAX_LENGTH) return null;
   return trimmed;
 }
 

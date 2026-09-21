@@ -28,7 +28,19 @@ test('acceptSummary rejects output that is not a summary', () => {
   assert.equal(acceptSummary('   ', SOURCE), null);
   assert.equal(acceptSummary(null, SOURCE), null);
   assert.equal(acceptSummary('짧음', SOURCE), null, 'too short to carry a holding');
-  assert.equal(acceptSummary(SOURCE + SOURCE, SOURCE), null, 'longer than the source');
+  assert.equal(acceptSummary('가'.repeat(600), SOURCE), null, 'rambling, not summarising');
+});
+
+// Plain language is wordier than the court's. A terse 158-character 판시사항
+// with two numbered holdings needs more than 158 characters to be readable, so
+// 'shorter than the source' rejected summaries that were working.
+test('acceptSummary allows a summary to run longer than a terse source', () => {
+  const terse = '[1] 임차인의 계약갱신 요구와 이를 거절할 수 있는 사유를 정한 주택임대차보호법 제6조의3 제1항의 규정 취지 '
+    + '[2] 임대인이 실제 거주를 이유로 갱신을 거절한 경우의 판단 기준';
+  const plain = '임차인이 계약을 더 연장해 달라고 요구하면 임대인은 정해진 사유가 있을 때만 거절할 수 있습니다. '
+    + '임대인이 직접 살겠다는 이유로 거절하려면 실제로 들어와 살 생각이 있어야 하고, 그 의사는 여러 사정을 함께 살펴 판단합니다.';
+  assert.ok(plain.length > terse.length, 'this test only means something if the summary is longer');
+  assert.equal(acceptSummary(plain, terse), plain);
 });
 
 test('acceptSummary accepts a plain two-sentence answer', () => {

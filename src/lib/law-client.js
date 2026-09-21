@@ -118,10 +118,15 @@ export function fetchTopic(env, ctx, topicKey, fetchImpl = fetch) {
   if (!Object.hasOwn(TOPICS, topicKey)) {
     return Promise.reject(new LawUnavailableError('UNKNOWN_TOPIC'));
   }
+  // Whether a model was configured is part of the key. Without it, adding a
+  // key to a running deployment would keep serving a week of unsummarised
+  // payloads cached from before it existed.
+  const summarised = env?.UPSTAGE_API_KEY ? 'sum' : 'raw';
+
   return cached(
     env,
     ctx,
-    `law:v4:${SUMMARY_VERSION}:${topicKey}`,
+    `law:v4:${SUMMARY_VERSION}:${summarised}:${topicKey}`,
     CACHE_TTL_SECONDS,
     () => callUpstream(env, topicKey, fetchImpl),
   );
