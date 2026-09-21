@@ -1,26 +1,11 @@
 import { jeonseRatio, verdict, tradeDistribution, similarPrices } from './lib/ratio.js';
+import { listComplexes, complexTransactions, monthRangeLabel, missingRatioReason } from './lib/aggregate.js';
+import { recentMonths } from './lib/months.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const format = (number) => new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 }).format(number);
 const money = (number) => `${format(number)}만원`;
-// Fixed fictional transactions. Not generated from or matched to user-entered prices/names.
-const mockTrades = [
-  { name: '가상 단지', area: 82, price: 48000 },
-  { name: '가상 단지', area: 84, price: 51000 },
-  { name: '가상 단지', area: 84.5, price: 53000 },
-  { name: '가상 단지', area: 83, price: 56000 },
-  { name: '가상 단지', area: 85, price: 58000 },
-  { name: '가상 단지', area: 84, price: 60000 },
-  { name: '가상 단지', area: 84, price: 60000 },
-  { name: '가상 단지', area: 86, price: 62000 },
-  { name: '가상 단지', area: 83.5, price: 64000 },
-  { name: '가상 단지', area: 84, price: 66000 },
-  { name: '가상 단지', area: 85, price: 68000 },
-  { name: '가상 단지', area: 84, price: 72000 },
-  { name: '가상 단지', area: 59, price: 39000 },
-  { name: '가상 단지', area: 59.5, price: 41000 },
-];
 let regions = [];
 let step = 1;
 let contract = null;
@@ -79,6 +64,172 @@ function fail(selector, message) {
   return false;
 }
 
+// How many months of transactions one diagnosis looks at. Each month is a
+// separate request so that no single Worker invocation parses more than one
+// month of XML; the browser issues them together.
+const MONTHS = 6;
+
+// Rows already fetched, keyed by lawdCd, so returning to a district costs
+// nothing. The Worker caches too, but this skips the round trip entirely.
+const rowsByDistrict = new Map();
+
+let monthlyRows = null;
+let complexes = [];
+let selectedComplex = null;
+
+// Abandoned loads are cancelled, not merely ignored. Twelve requests are in
+// flight per district; letting them finish after the user has moved on spends
+// the daily upstream quota on answers nobody will see.
+let inFlight = null;
+
+// Identifies the load a response belongs to. A district the user has moved on
+// from can still have a dozen requests in flight; without this, the slower one
+// repaints the list and the user picks a complex that does not exist in the
+// district they selected.
+let loadToken = 0;
+
+// What a search term is matched against: the join key plus the displayed name.
+// The key has parentheses stripped, so matching on it alone makes a complex
+// unsearchable by the very label the list prints — '경희궁자이(1단지)' finds
+// nothing.
+function searchIndex(item) {
+  return `${item.key} ${String(item.name ?? '').replace(/\s+/g, '').toLowerCase()}`;
+}
+
+function resetComplexes(message) {
+  // Any load still in flight belongs to a selection that no longer exists.
+  loadToken += 1;
+  inFlight?.abort();
+  inFlight = null;
+  complexes = [];
+  selectedComplex = null;
+  monthlyRows = null;
+  $('#complex-list').replaceChildren();
+  $('#complex-empty').hidden = true;
+  $('#complex-filter').value = '';
+  $('#complex-status').textContent = message;
+}
+
+// A request that failed for a reason retrying cannot change must not tell the
+// user to retry. A deployment with no service key answers 503 forever.
+const LOAD_FAILURE_MESSAGE = {
+  KEY_NOT_CONFIGURED: '서버에 공공데이터포털 서비스키가 설정되지 않았습니다. 운영자에게 알려 주세요.',
+  INVALID_PARAMETERS: '조회 조건이 올바르지 않습니다. 페이지를 새로고침한 뒤 다시 선택해 주세요.',
+};
+const DEFAULT_LOAD_FAILURE = '실거래가를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+
+class LoadFailure extends Error {
+  constructor(code) {
+    super(code);
+    this.code = code;
+  }
+}
+
+async function fetchMonthRows(kind, lawdCd, ym, signal) {
+  const response = await fetch(`/api/month?kind=${kind}&lawdCd=${lawdCd}&ym=${ym}`, { signal });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new LoadFailure(body.error ?? `HTTP_${response.status}`);
+  }
+  return (await response.json()).rows ?? [];
+}
+
+function showComplexes(cached) {
+  monthlyRows = cached;
+  complexes = listComplexes(cached.trades, cached.rents);
+  const range = monthRangeLabel(cached.months);
+  $('#complex-status').textContent = complexes.length
+    ? `${range} 거래가 있는 단지 ${format(complexes.length)}곳`
+    : `${range} 이 지역에는 아파트 거래 기록이 없습니다.`;
+  renderComplexes('');
+}
+
+async function loadComplexes(lawdCd) {
+  resetComplexes('단지를 불러오는 중입니다...');
+  const token = (loadToken += 1);
+
+  const cached = rowsByDistrict.get(lawdCd);
+  if (cached) {
+    showComplexes(cached);
+    return;
+  }
+
+  const controller = new AbortController();
+  inFlight = controller;
+
+  const months = recentMonths(MONTHS);
+  // Fanning out here is the point: one Worker invocation per region-month.
+  const requests = months.flatMap((ym) => [
+    fetchMonthRows('trade', lawdCd, ym, controller.signal).then((rows) => ({ kind: 'trade', rows })),
+    fetchMonthRows('rent', lawdCd, ym, controller.signal).then((rows) => ({ kind: 'rent', rows })),
+  ]);
+
+  let settled;
+  try {
+    settled = await Promise.all(requests);
+  } catch (error) {
+    // Never fall back to partial data: a short range moves the median.
+    if (token !== loadToken) return;
+    monthlyRows = null;
+    $('#complex-status').textContent = error instanceof LoadFailure
+      ? LOAD_FAILURE_MESSAGE[error.code] ?? DEFAULT_LOAD_FAILURE
+      : DEFAULT_LOAD_FAILURE;
+    return;
+  }
+
+  // The user moved on while these were in flight. Their result is not ours.
+  if (token !== loadToken) return;
+  inFlight = null;
+
+  const rows = {
+    lawdCd,
+    months,
+    trades: settled.filter((r) => r.kind === 'trade').flatMap((r) => r.rows),
+    rents: settled.filter((r) => r.kind === 'rent').flatMap((r) => r.rows),
+  };
+  rowsByDistrict.set(lawdCd, rows);
+  showComplexes(rows);
+}
+
+function renderComplexes(filter) {
+  const needle = String(filter ?? '').replace(/\s+/g, '').toLowerCase();
+  const shown = needle ? complexes.filter((c) => searchIndex(c).includes(needle)) : complexes;
+  const list = $('#complex-list');
+  list.replaceChildren();
+
+  for (const item of shown) {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'complex-option';
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(item.key === selectedComplex?.key));
+    if (item.key === selectedComplex?.key) option.classList.add('selected');
+
+    const name = document.createElement('strong');
+    // Ministry-supplied text is never inserted as HTML.
+    name.textContent = item.name;
+    const meta = document.createElement('small');
+    meta.textContent = `매매 ${format(item.tradeCount)}건 · 전월세 ${format(item.rentCount)}건`;
+    option.append(name, meta);
+
+    option.addEventListener('click', () => {
+      selectedComplex = item;
+      $$('.complex-option').forEach((el) => {
+        const chosen = el === option;
+        el.classList.toggle('selected', chosen);
+        el.setAttribute('aria-selected', String(chosen));
+      });
+      clearError();
+    });
+
+    const li = document.createElement('li');
+    li.append(option);
+    list.append(li);
+  }
+
+  $('#complex-empty').hidden = shown.length > 0 || complexes.length === 0;
+}
+
 function validate(number) {
   clearError();
   if (number === 1) {
@@ -87,7 +238,7 @@ function validate(number) {
     if (!group) return fail('#sido-select', '시도를 선택해 주세요.');
     if (!group.items.some((item) => item.code === $('#district-select').value)) return fail('#district-select', '시군구를 선택해 주세요.');
   }
-  if (number === 2 && !$('#apartment-input').value.trim()) return fail('#apartment-input', '아파트 단지명을 입력해 주세요.');
+  if (number === 2 && !selectedComplex) return fail('#complex-filter', '목록에서 단지를 선택해 주세요.');
   if (number === 3) {
     for (const [selector, label, minimum, integer] of [
       ['#area-input', '전용면적', 0.01, false], ['#deposit-input', '보증금', 1, true], ['#rent-input', '월세', 0, true],
@@ -112,10 +263,17 @@ $('#diagnosis-form').addEventListener('submit', (event) => {
   }
   const group = regions.find((entry) => entry.sido === $('#sido-select').value);
   const district = group.items.find((entry) => entry.code === $('#district-select').value);
+  // The rows are already in memory: the complex list was built from them. No
+  // second round trip, and the report cannot disagree with the list it came from.
+  const picked = complexTransactions(selectedComplex.key, monthlyRows.trades, monthlyRows.rents);
   contract = {
     sido: group.sido, district: district.name, lawdCd: district.code,
-    apartment: $('#apartment-input').value.trim(), area: Number($('#area-input').value),
+    apartment: picked.name ?? selectedComplex.name, complexKey: selectedComplex.key,
+    area: Number($('#area-input').value),
     deposit: Number($('#deposit-input').value), rent: Number($('#rent-input').value),
+    trades: picked.trades, rents: picked.rents,
+    cancelledCount: picked.cancelledCount,
+    rangeLabel: monthRangeLabel(monthlyRows.months),
   };
   location.hash = 'result';
 });
@@ -129,12 +287,20 @@ $('#sido-select').addEventListener('change', () => {
   select.replaceChildren(new Option(group ? '시군구를 선택해 주세요' : '시도를 먼저 선택해 주세요', ''));
   select.disabled = !group;
   if (group) group.items.forEach((item) => select.add(new Option(item.name, item.code)));
+  resetComplexes('시군구를 선택하면 실제 거래가 있는 단지를 불러옵니다.');
   clearError();
 });
+$('#district-select').addEventListener('change', (event) => {
+  clearError();
+  if (event.target.value) loadComplexes(event.target.value);
+  else resetComplexes('시군구를 선택하면 실제 거래가 있는 단지를 불러옵니다.');
+});
+$('#complex-filter').addEventListener('input', (event) => renderComplexes(event.target.value));
 $('#new-diagnosis').addEventListener('click', () => {
   contract = null;
   step = 1;
   $('#diagnosis-form').reset();
+  monthlyRows = null;
   $('#sido-select').dispatchEvent(new Event('change'));
 });
 
@@ -179,19 +345,75 @@ function renderDistribution(stats, deposit) {
     <p class="distribution-note">25%·75%는 실제 관측값(nearest-rank)을 사용합니다.<br>내 보증금 마커는 매매가와의 비교이며 전월세 백분위가 아닙니다.</p>`;
 }
 
+// Why a ratio could not be produced. The distinction matters: "not enough
+// samples" reads like a defect when the real reason is that this complex has
+// not sold in the window we looked at.
+// Built from nodes, not markup: the lines can contain a complex name, and that
+// comes from the ministry.
+function unknownState(headingText, lines) {
+  const state = document.createElement('div');
+  state.className = 'unknown-state';
+
+  const symbol = document.createElement('span');
+  symbol.className = 'unknown-symbol';
+  symbol.setAttribute('aria-hidden', 'true');
+  symbol.textContent = '—';
+
+  const heading = document.createElement('h3');
+  heading.textContent = headingText;
+
+  const detail = document.createElement('p');
+  lines.forEach((line, index) => {
+    if (index > 0) detail.append(document.createElement('br'));
+    detail.append(document.createTextNode(line));
+  });
+
+  state.append(symbol, heading, detail);
+  return state;
+}
+
+function renderMissingRatio(reason) {
+  const warning = document.createElement('p');
+  warning.className = 'ratio-warning';
+  warning.textContent = '표본을 늘리려고 면적 범위를 넓히거나 가격을 추정하지 않습니다.';
+
+  $('#ratio-content').replaceChildren(unknownState(reason.heading, reason.lines), warning);
+}
+
 function renderResult() {
-  const result = jeonseRatio(contract.deposit, mockTrades, contract.area);
+  const trades = contract.trades ?? [];
+  const result = jeonseRatio(contract.deposit, trades, contract.area);
   const decision = verdict(result);
-  const size = similarPrices(mockTrades, contract.area).length;
-  const stats = tradeDistribution(mockTrades, contract.area);
-  // User-provided text is never inserted as HTML.
+  const size = similarPrices(trades, contract.area).length;
+  const stats = tradeDistribution(trades, contract.area);
+  // Ministry-supplied text is never inserted as HTML.
   $('#contract-summary').textContent = `${contract.sido} ${contract.district === contract.sido ? '' : contract.district} · ${contract.apartment} · 전용 ${format(contract.area)}㎡ · ${contract.rent === 0 ? '전세' : '월세'} · 보증금 ${money(contract.deposit)}${contract.rent > 0 ? ` · 월세 ${money(contract.rent)}` : ''}`;
+  // Where the numbers came from, including rows that were removed. A report
+  // that quietly drops cancelled deals cannot be checked against the source.
+  const provenance = [`국토교통부 실거래가 · ${contract.rangeLabel}`, `매매 ${format(trades.length)}건`];
+  if (contract.cancelledCount > 0) provenance.push(`해제 거래 ${format(contract.cancelledCount)}건 제외`);
+  $('#data-provenance').textContent = provenance.join(' · ');
+
   $('#monthly-rent-note').hidden = contract.rent === 0;
   $('#sample-count').textContent = `표본 ${size}건`;
   $('#ratio-card').dataset.verdict = decision.level;
   if (decision.level === 'unknown') {
-    $('#ratio-content').innerHTML = `<div class="unknown-state"><span class="unknown-symbol" aria-hidden="true">—</span><h3>표본 부족 — 판정 불가</h3><p>유사 면적 매매 거래 표본 ${size}건<br>표본 3건 미만으로 전세가율을 표시하지 않습니다.</p></div><p class="ratio-warning">표본을 늘리려고 면적 범위를 넓히거나 가격을 추정하지 않습니다.</p>`;
-    $('#distribution-content').innerHTML = '<div class="unknown-state"><span class="unknown-symbol" aria-hidden="true">—</span><h3>거래 분포를 표시할 수 없습니다</h3><p>표본 3건 이상이 필요합니다.<br>매매가격 통계와 보증금 위치를 표시하지 않습니다.</p></div>';
+    const reason = missingRatioReason({
+      name: contract.apartment,
+      rangeLabel: contract.rangeLabel,
+      area: contract.area,
+      tradeCount: trades.length,
+      sampleSize: size,
+    });
+    renderMissingRatio(reason);
+    // Same reason as the ratio card. Two cards explaining one blank report
+    // differently is how a reader concludes the page is broken.
+    $('#distribution-content').replaceChildren(unknownState(
+      '거래 분포를 표시할 수 없습니다',
+      reason.kind === 'no-sales' ? ['매매 거래가 없어 분포를 그릴 수 없습니다.']
+        : reason.kind === 'no-comparable' ? [`전용 ${format(contract.area)}㎡ 부근 거래가 없어 분포를 그릴 수 없습니다.`]
+        : ['표본 3건 이상이 필요합니다.', '매매가격 통계와 보증금 위치를 표시하지 않습니다.'],
+    ));
   } else {
     // Truncate to one decimal so rounding never displays the next verdict boundary.
     const displayRatio = Math.floor(result.ratio * 10) / 10;
