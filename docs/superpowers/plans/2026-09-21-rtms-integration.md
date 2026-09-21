@@ -1,4 +1,4 @@
-# 실거래가 연동 Implementation Plan
+﻿# 실거래가 연동 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -423,62 +423,95 @@ git commit -m "feat: add upstream client for the real-transaction API"
 
 ---
 
-### Task 3: API 라우트
+### Task 3: `/api/month` 라우트
+
+> 2026-09-21 개정. 원안은 `/api/complexes`와 `/api/complex` 두 라우트가 6개월치를
+> 한 요청에서 처리했다. 실측 결과 응답이 월당 최대 134KB여서 한 invocation이
+> 1.2MB를 파싱하게 되고, CPU 10ms 예산을 넘긴다. 라우트를 월 단위로 쪼개고
+> 집계를 클라이언트로 옮긴다.
 
 **Files:**
 - Modify: `src/index.js`
 - Test: `tests/routes.test.js`
 
 **Interfaces:**
-- Consumes: `fetchRange` from `src/lib/rtms-client.js`; `complexKey`, `activeTrades` from `src/lib/rtms.js`
-- Produces: `GET /api/complexes`, `GET /api/complex` — 응답 형태는 `docs/DESIGN.md` 6절과 동일
+- Consumes: `fetchMonth`, `UpstreamError` from `src/lib/rtms-client.js`
+- Produces: `GET /api/month?kind=&lawdCd=&ym=` → `{ kind, lawdCd, ym, rows }`
 
 - [ ] **Step 1: Write the failing test**
 
-`tests/routes.test.js`에 추가:
+`tests/routes.test.js` 상단에 픽스처와 스텁 환경을 둔다:
 
 ```js
-test('/api/complexes rejects a malformed region code before calling upstream', async () => {
-  const response = await app.request('/api/complexes?lawdCd=111', {}, { DATA_GO_KR_KEY: 'k' });
-  assert.equal(response.status, 400);
-  assert.equal((await response.json()).error, 'INVALID_PARAMETERS');
+const RENT_BODY = `<response><header><resultCode>000</resultCode></header><body><items>
+<item><aptNm>삼익</aptNm><excluUseAr>55.57</excluUseAr><deposit>1,000</deposit><monthlyRent>50</monthlyRent><floor>10</floor><dealYear>2026</dealYear><dealMonth>6</dealMonth><dealDay>25</dealDay><umdNm>파장동</umdNm><buildYear>1978</buildYear></item>
+</items></body></response>`;
+
+const TRADE_BODY = `<response><header><resultCode>000</resultCode></header><body><items>
+<item><aptNm>삼익</aptNm><excluUseAr>55.57</excluUseAr><dealAmount>30,000</dealAmount><floor>3</floor><dealYear>2026</dealYear><dealMonth>6</dealMonth><dealDay>17</dealDay><umdNm>파장동</umdNm><buildYear>1978</buildYear><cdealType> </cdealType><cdealDay> </cdealDay></item>
+<item><aptNm>삼익</aptNm><excluUseAr>55.57</excluUseAr><dealAmount>99,999</dealAmount><floor>4</floor><dealYear>2026</dealYear><dealMonth>6</dealMonth><dealDay>18</dealDay><umdNm>파장동</umdNm><buildYear>1978</buildYear><cdealType>해제</cdealType><cdealDay>26.07.01</cdealDay></item>
+</items></body></response>`;
+
+function stubEnv(overrides = {}) {
+  return {
+    DATA_GO_KR_KEY: 'TEST_KEY',
+    fetchImpl: async (url) => ({
+      ok: true,
+      status: 200,
+      text: async () => (String(url).includes('AptRent') ? RENT_BODY : TRADE_BODY),
+    }),
+    ...overrides,
+  };
+}
+```
+
+검사:
+
+```js
+test('/api/month returns normalized rows for the requested feed', async () => {
+  const response = await app.request('/api/month?kind=trade&lawdCd=11110&ym=202606', {}, stubEnv());
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.kind, 'trade');
+  assert.equal(body.lawdCd, '11110');
+  assert.equal(body.ym, '202606');
+  assert.equal(body.rows.length, 2);
+  assert.equal(body.rows[0].price, 30000);
+  assert.equal(body.rows[0].key, '삼익');
 });
 
-test('/api/complexes fails closed when the key is missing', async () => {
-  const response = await app.request('/api/complexes?lawdCd=11110', {}, {});
+test('/api/month keeps cancelled trades so the client can count them', async () => {
+  const response = await app.request('/api/month?kind=trade&lawdCd=11110&ym=202606', {}, stubEnv());
+  const body = await response.json();
+  assert.equal(body.rows.filter((r) => r.cancelled).length, 1);
+});
+
+test('/api/month rejects a bad kind, region code or month before calling upstream', async () => {
+  let called = false;
+  const env = stubEnv({ fetchImpl: async () => { called = true; return { ok: true, status: 200, text: async () => '' }; } });
+  for (const query of [
+    'kind=nope&lawdCd=11110&ym=202606',
+    'kind=rent&lawdCd=111&ym=202606',
+    'kind=rent&lawdCd=11110&ym=2026',
+    'kind=rent&lawdCd=11110&ym=202613',
+    'kind=rent&lawdCd=11110',
+  ]) {
+    const response = await app.request(`/api/month?${query}`, {}, env);
+    assert.equal(response.status, 400, query);
+    assert.equal((await response.json()).error, 'INVALID_PARAMETERS', query);
+  }
+  assert.equal(called, false, 'a malformed request reached the upstream API');
+});
+
+test('/api/month fails closed when the key is missing', async () => {
+  const response = await app.request('/api/month?kind=rent&lawdCd=11110&ym=202606', {}, { fetchImpl: async () => {} });
   assert.equal(response.status, 503);
   assert.equal((await response.json()).error, 'KEY_NOT_CONFIGURED');
 });
 
-test('/api/complexes groups rows by complex key and counts both feeds', async () => {
-  const response = await app.request('/api/complexes?lawdCd=11110&months=1', {}, stubEnv());
-  const body = await response.json();
-  assert.equal(response.status, 200);
-  const target = body.complexes.find((c) => c.key === '삼익');
-  assert.equal(target.name, '삼익');
-  assert.equal(target.tradeCount, 2);
-  assert.equal(target.rentCount, 1);
-});
-
-test('/api/complex removes cancelled trades and reports how many', async () => {
-  const response = await app.request('/api/complex?lawdCd=11110&key=삼익&months=1', {}, stubEnv());
-  const body = await response.json();
-  assert.equal(body.cancelledCount, 1);
-  assert.deepEqual(body.trades.map((t) => t.price), [30000]);
-  assert.equal(body.rents.length, 1);
-});
-
-test('/api/complex returns empty lists for a key with no transactions', async () => {
-  const response = await app.request('/api/complex?lawdCd=11110&key=없는단지&months=1', {}, stubEnv());
-  const body = await response.json();
-  assert.equal(response.status, 200);
-  assert.deepEqual(body.trades, []);
-  assert.deepEqual(body.rents, []);
-});
-
 test('an upstream failure surfaces as 502 without leaking the key', async () => {
-  const env = { DATA_GO_KR_KEY: 'SECRET_KEY', fetchImpl: async () => { throw new Error('nope'); } };
-  const response = await app.request('/api/complexes?lawdCd=11110&months=1', {}, env);
+  const env = stubEnv({ DATA_GO_KR_KEY: 'SECRET_KEY', fetchImpl: async () => { throw new Error('nope'); } });
+  const response = await app.request('/api/month?kind=rent&lawdCd=11110&ym=202605', {}, env);
   assert.equal(response.status, 502);
   const text = await response.text();
   assert.equal(JSON.parse(text).error, 'UPSTREAM_UNAVAILABLE');
@@ -492,140 +525,63 @@ test('the debug route is gone', async () => {
 });
 ```
 
-`stubEnv()`는 이 파일 상단에 둔다. Task 2의 `RENT_BODY` / `TRADE_BODY`를 그대로 쓴다:
-
-```js
-function stubEnv() {
-  return {
-    DATA_GO_KR_KEY: 'TEST_KEY',
-    fetchImpl: async (url) => ({
-      ok: true,
-      status: 200,
-      text: async () => (url.includes('AptRent') ? RENT_BODY : TRADE_BODY),
-    }),
-  };
-}
-```
-
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `node --test tests/routes.test.js`
-Expected: FAIL — `/api/complexes`가 `NOT_FOUND` 404를 반환한다. 디버그 라우트 테스트는 아직 통과한다(삭제 전).
+Expected: FAIL — `/api/month`가 `NOT_FOUND` 404를 반환한다.
 
 - [ ] **Step 3: Write minimal implementation**
 
-`src/index.js`에서 `/api/debug/sample` 핸들러 **전체를 삭제**하고, `app.all('/api/*', ...)` 앞에 아래를 넣는다.
-`wrangler.jsonc`의 `vars.ENABLE_API_DEBUG`도 지운다.
+`src/index.js`에서 `/api/debug/sample` 핸들러 **전체를 삭제**하고,
+`wrangler.jsonc`의 `vars.ENABLE_API_DEBUG`도 지운다. `app.all('/api/*', ...)` 앞에 넣는다:
 
 ```js
-import { fetchRange, UpstreamError } from './lib/rtms-client.js';
-import { complexKey, activeTrades } from './lib/rtms.js';
+import { fetchMonth, UpstreamError } from './lib/rtms-client.js';
 
-const MAX_MONTHS = 12;
+const KINDS = new Set(['rent', 'trade']);
 
-function readQuery(c) {
+app.get('/api/month', async (c) => {
+  const kind = c.req.query('kind') ?? '';
   const lawdCd = c.req.query('lawdCd') ?? '';
-  const months = Number(c.req.query('months') ?? 6);
-  if (!/^\d{5}$/.test(lawdCd)) return { error: 'INVALID_PARAMETERS' };
-  if (!Number.isInteger(months) || months < 1 || months > MAX_MONTHS) return { error: 'INVALID_PARAMETERS' };
-  return { lawdCd, months };
-}
+  const ym = c.req.query('ym') ?? '';
 
-// 테스트가 fetch 를 주입할 수 있게 env 를 통해 받는다. 배포 환경에는 없다.
-const fetcher = (c) => c.env.fetchImpl ?? fetch;
-
-async function loadBoth(c, lawdCd, months) {
-  const impl = fetcher(c);
-  const [rents, trades] = [
-    await fetchRange(c.env, c.executionCtx, 'rent', lawdCd, months, impl),
-    await fetchRange(c.env, c.executionCtx, 'trade', lawdCd, months, impl),
-  ];
-  return { rents, trades };
-}
-
-app.get('/api/complexes', async (c) => {
-  const query = readQuery(c);
-  if (query.error) return c.json({ error: query.error }, 400);
+  if (!KINDS.has(kind) || !/^\d{5}$/.test(lawdCd) || !/^\d{4}(0[1-9]|1[0-2])$/.test(ym)) {
+    return c.json({ error: 'INVALID_PARAMETERS' }, 400);
+  }
   if (!c.env.DATA_GO_KR_KEY) return c.json({ error: 'KEY_NOT_CONFIGURED' }, 503);
 
-  let rents; let trades;
   try {
-    ({ rents, trades } = await loadBoth(c, query.lawdCd, query.months));
-  } catch (e) {
-    return c.json({ error: e instanceof UpstreamError ? e.code : 'UPSTREAM_UNAVAILABLE' }, 502);
+    // env.fetchImpl exists only so tests can inject a transport.
+    const rows = await fetchMonth(c.env, c.executionCtx, kind, lawdCd, ym, c.env.fetchImpl ?? fetch);
+    return c.json({ kind, lawdCd, ym, rows });
+  } catch (error) {
+    // Never echo the cause: it can contain the service key.
+    const code = error instanceof UpstreamError ? error.code : 'UPSTREAM_UNAVAILABLE';
+    return c.json({ error: code }, 502);
   }
-
-  const byKey = new Map();
-  const touch = (row, field) => {
-    const entry = byKey.get(row.key) ?? { key: row.key, name: row.name, tradeCount: 0, rentCount: 0, at: -1 };
-    entry[field] += 1;
-    // 표기가 여럿이면 가장 최근 거래의 것을 대표로 쓴다.
-    const at = row.year * 10000 + row.month * 100 + (row.day ?? 0);
-    if (at > entry.at) { entry.at = at; entry.name = row.name; }
-    byKey.set(row.key, entry);
-  };
-  for (const row of trades) touch(row, 'tradeCount');
-  for (const row of rents) touch(row, 'rentCount');
-
-  const complexes = [...byKey.values()]
-    .map(({ at, ...rest }) => rest)
-    .sort((a, b) => (b.tradeCount + b.rentCount) - (a.tradeCount + a.rentCount));
-
-  return c.json({ lawdCd: query.lawdCd, months: query.months, complexes });
-});
-
-app.get('/api/complex', async (c) => {
-  const query = readQuery(c);
-  if (query.error) return c.json({ error: query.error }, 400);
-  const key = complexKey(c.req.query('key'));
-  if (!key) return c.json({ error: 'INVALID_PARAMETERS' }, 400);
-  if (!c.env.DATA_GO_KR_KEY) return c.json({ error: 'KEY_NOT_CONFIGURED' }, 503);
-
-  let rents; let trades;
-  try {
-    ({ rents, trades } = await loadBoth(c, query.lawdCd, query.months));
-  } catch (e) {
-    return c.json({ error: e instanceof UpstreamError ? e.code : 'UPSTREAM_UNAVAILABLE' }, 502);
-  }
-
-  const mineTrades = trades.filter((t) => t.key === key);
-  const kept = activeTrades(mineTrades);
-  const mineRents = rents.filter((r) => r.key === key);
-  const newest = [...kept, ...mineRents].sort(
-    (a, b) => (b.year * 100 + b.month) - (a.year * 100 + a.month),
-  )[0];
-
-  return c.json({
-    key,
-    name: newest?.name ?? c.req.query('key'),
-    months: query.months,
-    trades: kept.map(({ area, price, floor, year, month, day }) => ({ area, price, floor, year, month, day })),
-    rents: mineRents.map(({ area, deposit, monthlyRent, floor, year, month, day }) => ({ area, deposit, monthlyRent, floor, year, month, day })),
-    cancelledCount: mineTrades.length - kept.length,
-  });
 });
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `node --test tests/routes.test.js`
-Expected: PASS — 디버그 라우트 테스트 포함 전부 통과
-
-Run: `npm test`
-Expected: PASS
-
-Run: `git grep -n "ENABLE_API_DEBUG\|debug/sample"` → 문서 외 코드 히트 0건
+Run: `node --test tests/routes.test.js` → PASS
+Run: `npm test` → PASS
+Run: `git grep -n "ENABLE_API_DEBUG\|debug/sample" -- . ':!docs'` → 히트 0건
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/index.js wrangler.jsonc tests/routes.test.js
-git commit -m "feat: serve complex listings and transactions from the real API"
+git commit -m "feat: serve one region-month per request"
 ```
 
 ---
 
 ### Task 4: 단지 선택 UI
+
+> 2026-09-21 개정 대기. 아래 코드는 폐기된 `/api/complexes` / `/api/complex` 계약을 전제한다.
+> 실제 구현은 `/api/month` 를 월별로 병렬 호출하고 `public/lib/aggregate.js` 로 집계한다.
+> 이 태스크에 착수할 때 코드 단계를 새 계약에 맞춰 다시 쓴다.
 
 **Files:**
 - Modify: `public/index.html` (위저드 2단계 마크업)
@@ -633,7 +589,7 @@ git commit -m "feat: serve complex listings and transactions from the real API"
 - Modify: `tests/browser.mjs`
 
 **Interfaces:**
-- Consumes: `GET /api/complexes`
+- Consumes: `GET /api/month` (월별 병렬 호출), `public/lib/aggregate.js`의 `listComplexes`
 - Produces: `contract.complexKey`, `contract.apartment` — Task 5가 쓴다
 
 - [ ] **Step 1: Write the failing test**
@@ -754,12 +710,16 @@ git commit -m "feat: pick the complex from real transactions instead of free tex
 
 ### Task 5: 결과 화면을 실데이터로
 
+> 2026-09-21 개정 대기. 아래 코드는 폐기된 `/api/complexes` / `/api/complex` 계약을 전제한다.
+> 실제 구현은 `/api/month` 를 월별로 병렬 호출하고 `public/lib/aggregate.js` 로 집계한다.
+> 이 태스크에 착수할 때 코드 단계를 새 계약에 맞춰 다시 쓴다.
+
 **Files:**
 - Modify: `public/app.js` (`mockTrades` 삭제, `renderResult` 교체)
 - Modify: `tests/browser.mjs`
 
 **Interfaces:**
-- Consumes: `GET /api/complex`, `contract.complexKey`
+- Consumes: 이미 받아둔 월별 행, `public/lib/aggregate.js`의 `complexTransactions`
 - Produces: 없음 (최종 소비자)
 
 - [ ] **Step 1: Write the failing test**
@@ -891,7 +851,7 @@ cp artifacts/landing-360.png artifacts/wizard-360.png artifacts/result-360.png d
 
 README에서 아래를 고친다:
 - "1일차 목업" 서술을 실데이터 연동 상태로
-- 진입 경로 목록에서 `/api/debug/sample` 삭제, `/api/complexes`·`/api/complex` 추가
+- 진입 경로 목록에서 `/api/debug/sample` 삭제, `/api/month` 추가
 - 데이터 구조 절의 "가상 단일 단지 14건" 삭제
 - 테스트 개수 갱신
 
@@ -911,9 +871,9 @@ git commit -m "docs: describe the live data integration"
 | 설계서 절 | 구현 태스크 |
 |---|---|
 | 4. 데이터 소스 | Task 2 (`RENT_URL`/`TRADE_URL`, `TradeDev` 미사용) |
-| 5.1 `aptSeq` 부재 → 목록 선택 | Task 3 (`/api/complexes`), Task 4 (UI) |
+| 5.1 `aptSeq` 부재 → 목록 선택 | Task 3 (`/api/month`), Task 4 (집계 + UI) |
 | 5.2 해제 거래 | Task 3 (`activeTrades` + `cancelledCount`) |
-| 6. API 계약 | Task 3 |
+| 6. API 계약 | Task 3 (라우트), Task 4 (클라이언트 집계) |
 | 7. 캐시 | Task 1, Task 2, Task 6 Step 2 |
 | 8. 화면 변경 | Task 4, Task 5 |
 | 9. 보안 | Task 3 (디버그 라우트 삭제), Task 6 Step 3 |

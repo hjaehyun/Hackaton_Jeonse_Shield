@@ -1,4 +1,4 @@
-# 전세방패 — 실거래가 연동 설계서
+﻿# 전세방패 — 실거래가 연동 설계서
 
 작성일: 2026-09-21
 대상 범위: 목업 데이터를 국토교통부 실거래가 API 실데이터로 교체하는 작업
@@ -52,16 +52,32 @@
 
 ```
 [브라우저]
-   │  같은 오리진 — CORS 없음
+   │  지역·월 조합마다 한 번씩, 병렬. 같은 오리진이라 CORS 없음
+   │  집계(단지 묶기·해제 거래 제거)는 여기서 한다
    ▼
-[Cloudflare Workers · Hono]
+[Cloudflare Workers · Hono]      invocation 1회 = 1개월치 = 파싱 1건
    │
-   ├─▶ D1 (binding: DB)          cache 테이블, lawdCd+ym 단위
+   ├─▶ D1 (binding: DB)          cache 테이블, kind+lawdCd+ym 단위
    │
    └─▶ apis.data.go.kr            serviceKey 는 서버에만 존재
          ├─ RTMSDataSvcAptRent    전월세
          └─ RTMSDataSvcAptTrade   매매
 ```
+
+### 왜 브라우저가 월별로 나눠 호출하는가
+
+CPU 10ms는 **Worker 호출 1회당** 예산이다. 한 요청이 12개월치를 처리하면
+한 invocation 안에서 최대 1.2MB의 XML을 훑게 되고, 캐시가 있어도 첫 요청은
+반드시 그 비용을 전부 치른다. 캐시 히트여도 12개 블롭을 `JSON.parse` 해야 한다.
+
+실측(2026-09-21, 서울 종로구): 호출당 185~246ms, 응답 29KB~134KB.
+
+그래서 **부채질(fan-out)을 브라우저로 옮긴다.** Worker 호출 하나는 한 지역·한 달만
+처리하므로 파싱이 1건으로 고정된다. 브라우저는 같은 오리진으로 병렬 요청하고
+(HTTP/2 멀티플렉싱), 집계는 순수 함수로 클라이언트에서 수행한다.
+
+`src/lib/rtms.js`는 빌드 시 `public/lib/`로 복사되므로 서버와 브라우저가 같은
+정규화·키 생성 코드를 공유한다.
 
 ### 서버 프록시를 쓰는 이유
 
@@ -160,48 +176,44 @@ e편한세상 신촌 / E편한세상신촌   →  같은 키
 
 모든 라우트는 같은 오리진이며 인증이 없다. 실패는 HTTP 상태와 `error` 코드로 표현한다.
 
-### `GET /api/complexes`
+라우트는 하나뿐이다. 한 번의 호출이 한 지역의 한 달만 담당한다.
 
-지역과 기간에서 거래가 존재하는 단지 목록. 위저드 2단계가 쓴다.
+### `GET /api/month`
 
 ```
-쿼리   lawdCd=11110   (5자리 숫자, 필수)
-       months=6       (1~12, 기본 6)
+쿼리   kind=rent|trade    (필수)
+       lawdCd=11110       (5자리 숫자, 필수)
+       ym=202606          (YYYYMM, 필수)
 
 200    {
+         "kind": "trade",
          "lawdCd": "11110",
-         "months": 6,
-         "complexes": [
-           { "key": "광화문스페이스본", "name": "광화문스페이스본", "tradeCount": 12, "rentCount": 31 }
+         "ym": "202606",
+         "rows": [
+           { "name": "명륜동주상복합아남아파트", "key": "명륜동주상복합아남아파트",
+             "area": 59.36, "price": 89500, "floor": 3,
+             "year": 2026, "month": 6, "day": 17,
+             "buildYear": 1999, "dong": "명륜2가", "cancelled": false }
          ]
        }
 ```
 
-- `name`은 가장 최근 거래에 나타난 표기를 쓴다.
-- `tradeCount`가 0인 단지도 포함한다. 전세가율은 못 내지만 전월세 시세는 보여줄 수 있다.
-- 정렬: `tradeCount + rentCount` 내림차순.
+- `rows`는 `normalizeRent` / `normalizeTrade`를 거친 형태 그대로다.
+- **해제 거래를 제거하지 않는다.** 몇 건을 걸렀는지 이용자에게 알려야 하므로
+  제거는 집계 단계에서 한다.
+- 캐시 키는 `kind:lawdCd:ym`이며 TTL 24시간이다.
 
-### `GET /api/complex`
+### 집계는 클라이언트가 한다
 
-한 단지의 거래 내역. 결과 화면이 쓴다.
+`public/lib/aggregate.js`의 순수 함수들이 여러 달의 `rows`를 받아 화면에 필요한
+형태로 만든다. 서버 왕복이 없으므로 기간을 다시 넓힐 때 재조회가 필요 없다.
 
-```
-쿼리   lawdCd=11110
-       key=광화문스페이스본   (complexKey 결과, 필수)
-       months=6
+| 함수 | 역할 |
+|---|---|
+| `listComplexes(tradeRows, rentRows)` | `key`로 묶어 `{ key, name, tradeCount, rentCount }` 목록. 거래 수 내림차순 |
+| `complexTransactions(key, tradeRows, rentRows)` | 한 단지의 `{ trades, rents, cancelledCount }`. `trades`는 해제 거래 제거 완료 |
 
-200    {
-         "key": "광화문스페이스본",
-         "name": "광화문스페이스본",
-         "months": 6,
-         "trades": [ { "area": 97.61, "price": 96000, "floor": 5, "year": 2026, "month": 6, "day": 27 } ],
-         "rents":  [ { "area": 97.61, "deposit": 96000, "monthlyRent": 0, "floor": 1, "year": 2026, "month": 6, "day": 27 } ],
-         "cancelledCount": 2
-       }
-```
-
-- `trades`는 **이미 해제 거래가 제거된** 목록이다. `cancelledCount`는 몇 건을 걸렀는지 알린다.
-- `name`은 표기가 여럿이면 가장 최근 거래의 것.
+`name`은 표기가 여럿일 때 가장 최근 거래의 것을 쓴다.
 
 ### 오류 응답
 
@@ -223,8 +235,9 @@ e편한세상 신촌 / E편한세상신촌   →  같은 키
 2. 일 10,000건 쿼터 — 같은 지역·월을 반복 조회하지 않는다
 3. 응답 속도 — 시연에서 체감 차이가 크다
 
-한 번의 진단은 `months=6` 기준 **12회 업스트림 호출**(전월세 6 + 매매 6)이 필요하다.
-캐시가 없으면 같은 지역을 두 번째 조회할 때도 12회를 다시 쓴다.
+한 번의 진단은 6개월 기준 **12회 업스트림 호출**(전월세 6 + 매매 6)이 필요하다.
+브라우저가 병렬로 보내므로 체감은 1회 왕복에 가깝지만, 캐시가 없으면 같은 지역을
+두 번째 조회할 때도 12회를 다시 쓴다.
 
 ### 스키마
 
@@ -239,7 +252,7 @@ CREATE TABLE IF NOT EXISTS cache (
 ```
 
 키는 `rent:<lawdCd>:<ym>` / `trade:<lawdCd>:<ym>` — **업스트림 호출 단위로 캐시한다.**
-`/api/complexes`와 `/api/complex`는 같은 월별 캐시를 공유한다.
+라우트가 월 단위이므로 캐시 단위와 요청 단위가 1:1로 맞는다.
 
 TTL 24시간. 실거래가는 신고 기준이라 그보다 자주 바뀌지 않는다.
 
@@ -326,12 +339,14 @@ TTL 24시간. 실거래가는 신고 기준이라 그보다 자주 바뀌지 않
 | `src/lib/rtms.js` | 완료 | XML 파싱, 금액 파싱, 단지 키, 정규화, 해제 거래 필터 |
 | `src/lib/ratio.js` | 완료 | 전세가율, 판정, 분포 통계 |
 | `src/lib/cache.js` | **신규** | D1 캐시 get/put, 스키마 보장 |
-| `src/lib/rtms-client.js` | **신규** | 업스트림 호출, 월 범위 조회, 캐시 연동 |
-| `src/index.js` | 수정 | `/api/complexes`, `/api/complex` 추가, 디버그 라우트 삭제 |
+| `src/lib/rtms-client.js` | **신규** | 업스트림 호출, 캐시 연동 |
+| `public/lib/aggregate.js` | **신규** | 여러 달의 행을 단지별로 묶는 순수 함수 |
+| `src/index.js` | 수정 | `/api/month` 추가, 디버그 라우트 삭제 |
 | `public/app.js` | 수정 | `mockTrades` 제거, 단지 선택 UI, API 호출, 실패 화면 |
 | `public/index.html` | 수정 | 2단계 마크업을 목록으로 |
 | `tests/cache.test.js` | **신규** | 캐시 히트·만료·바인딩 부재 |
 | `tests/rtms-client.test.js` | **신규** | 월 범위 계산, 업스트림 실패 처리 |
+| `tests/aggregate.test.js` | **신규** | 단지 묶기, 해제 거래 집계 |
 | `tests/routes.test.js` | 수정 | 새 라우트 계약 |
 | `tests/browser.mjs` | 수정 | 단지 선택 흐름, 실패 화면 |
 
@@ -344,7 +359,7 @@ TTL 24시간. 실거래가는 신고 기준이라 그보다 자주 바뀌지 않
 
 | 문제 | 현재 판단 |
 |---|---|
-| `months=6`이 12회 호출을 부른다 | 캐시로 흡수. 부족하면 3개월로 줄이고 표본 부족 시 확장 |
+| 6개월이 12회 호출을 부른다 | 브라우저에서 병렬 + D1 캐시로 흡수. 부족하면 3개월로 줄이고 표본 부족 시 확장 |
 | 단지 목록이 큰 구에서는 수백 개 | 검색어 필터 + `tradeCount` 정렬. 가상 스크롤은 하지 않는다 |
 | 한 단지에 표기가 여러 개 | 가장 최근 거래의 표기를 대표로. 키는 이미 같다 |
 | 캐시 테이블이 계속 커짐 | 6일짜리 행사. 방치해도 문제 없음 |
