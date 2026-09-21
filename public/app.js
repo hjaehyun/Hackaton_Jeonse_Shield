@@ -93,7 +93,23 @@ let monthlyRows = null;
 let complexes = [];
 let selectedComplex = null;
 
+// Identifies the load a response belongs to. A district the user has moved on
+// from can still have a dozen requests in flight; without this, the slower one
+// repaints the list and the user picks a complex that does not exist in the
+// district they selected.
+let loadToken = 0;
+
+// What a search term is matched against: the join key plus the displayed name.
+// The key has parentheses stripped, so matching on it alone makes a complex
+// unsearchable by the very label the list prints — '경희궁자이(1단지)' finds
+// nothing.
+function searchIndex(item) {
+  return `${item.key} ${String(item.name ?? '').replace(/\s+/g, '').toLowerCase()}`;
+}
+
 function resetComplexes(message) {
+  // Any load still in flight belongs to a selection that no longer exists.
+  loadToken += 1;
   complexes = [];
   selectedComplex = null;
   monthlyRows = null;
@@ -115,6 +131,7 @@ async function loadComplexes(lawdCd) {
     return;
   }
   resetComplexes('단지를 불러오는 중입니다...');
+  const token = (loadToken += 1);
 
   const months = recentMonths(MONTHS);
   // Fanning out here is the point: one Worker invocation per region-month.
@@ -128,10 +145,14 @@ async function loadComplexes(lawdCd) {
     settled = await Promise.all(requests);
   } catch {
     // Never fall back to partial data: a short range moves the median.
+    if (token !== loadToken) return;
     monthlyRows = null;
     $('#complex-status').textContent = '실거래가를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
     return;
   }
+
+  // The user moved on while these were in flight. Their result is not ours.
+  if (token !== loadToken) return;
 
   monthlyRows = {
     lawdCd,
@@ -150,7 +171,7 @@ async function loadComplexes(lawdCd) {
 
 function renderComplexes(filter) {
   const needle = String(filter ?? '').replace(/\s+/g, '').toLowerCase();
-  const shown = needle ? complexes.filter((c) => c.key.includes(needle)) : complexes;
+  const shown = needle ? complexes.filter((c) => searchIndex(c).includes(needle)) : complexes;
   const list = $('#complex-list');
   list.replaceChildren();
 

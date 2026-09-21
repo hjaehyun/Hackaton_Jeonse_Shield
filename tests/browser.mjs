@@ -70,6 +70,19 @@ try {
     const chosen = await pickComplex(page);
     assert.ok(chosen.length > 0, 'the list must show a real complex name');
     results.push({ check: `${width}px complex list built from live transactions`, result: 'pass', chosen });
+
+    // The label the list prints must find that entry when typed back. Names
+    // carry parentheses the matching key strips, so searching on the key alone
+    // makes a complex unsearchable by its own displayed name.
+    const options = () => page.locator('#complex-list .complex-option');
+    await page.fill('#complex-filter', chosen);
+    assert.ok(await options().count() >= 1, `typing the displayed name "${chosen}" found nothing`);
+    await page.fill('#complex-filter', '없을만한이름zzz');
+    assert.equal(await options().count(), 0);
+    assert.equal(await page.locator('#complex-empty').isVisible(), true);
+    await page.fill('#complex-filter', '');
+    results.push({ check: `${width}px a complex is findable by its displayed name`, result: 'pass' });
+    await pickComplex(page);
     await page.locator('#previous-step').click();
     assert.equal(await page.locator('#district-select').inputValue(), '11110');
     await clickNext(page);
@@ -185,6 +198,39 @@ try {
   assert.match(await page.locator('#contract-summary').innerText(), /<img src=x/);
   assert.equal(await page.locator('#contract-summary img').count(), 0);
   results.push({ check: 'ministry-supplied names escaped; no HTML execution', result: 'pass' });
+  await page.unroute('**/api/month*');
+
+  // Switching districts while the first one is still loading must not let the
+  // slower response repaint the list. Otherwise the user sees one district's
+  // complexes under another district's name and picks a key that does not
+  // exist there, which surfaces later as an unexplained 'not enough samples'.
+  await page.route('**/api/month*', async (route) => {
+    const url = new URL(route.request().url());
+    const slow = url.searchParams.get('lawdCd') === '11110';
+    const name = slow ? '느린구역단지' : '빠른구역단지';
+    const kind = url.searchParams.get('kind');
+    const shared = { name, key: name, area: 84, floor: 3, year: 2026, month: 6, day: 17 };
+    const rows = kind === 'trade'
+      ? [{ ...shared, price: 60000, cancelled: false }]
+      : [{ ...shared, deposit: 35000, monthlyRent: 0 }];
+    if (slow) await new Promise((resolve) => { setTimeout(resolve, 1500); });
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind, rows }) });
+  });
+  await page.goto(baseURL + '/#diagnosis');
+  // The previous test left a completed contract, which sends the wizard to
+  // step 3 and hides the region selects. Reload to start from step 1.
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.locator('#sido-select option[value="서울특별시"]').waitFor({ state: 'attached' });
+  await page.selectOption('#sido-select', '서울특별시');
+  await page.selectOption('#district-select', '11110');
+  await page.waitForTimeout(150);
+  await page.selectOption('#district-select', '11140');
+  await clickNext(page);
+  await page.locator('#complex-list .complex-option').first().waitFor({ state: 'visible', timeout: 15000 });
+  await page.waitForTimeout(2000);
+  const namesAfterSwitch = await page.locator('#complex-list .complex-option strong').allInnerTexts();
+  assert.deepEqual(namesAfterSwitch, ['빠른구역단지'], `a stale district repainted the list: ${JSON.stringify(namesAfterSwitch)}`);
+  results.push({ check: 'a slower district response cannot overwrite the current one', result: 'pass' });
   await page.unroute('**/api/month*');
   await page.goto(baseURL + '/#diagnosis');
   await page.reload({ waitUntil: 'networkidle' });
