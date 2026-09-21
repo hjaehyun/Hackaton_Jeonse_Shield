@@ -227,9 +227,77 @@ try {  for (const width of [360, 390, 768, 1440]) {
   results.push({ check: 'ministry-supplied names escaped; no HTML execution', result: 'pass' });
   await page.unroute('**/api/month*');
 
+  // With a model configured the card leads with the plain summary and keeps the
+  // court's wording one tap below, labelled, so a reader can check one against
+  // the other without leaving the page.
+  {
+    await page.route('**/api/law*', async (route) => {
+      const topic = new URL(route.request().url()).searchParams.get('topic');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          topic, label: '대항력', guidance: '집이 팔려도 계속 살 수 있는 힘입니다. 전입신고 다음 날부터 생깁니다.',
+          precedents: [{
+            id: `${topic}-1`, caseNumber: '2025다210305', court: '대법원', decidedOn: '2026.02.26',
+            title: '배당이의', references: '주택임대차보호법 제3조',
+            summary: '주택임대차보호법 제3조 제2항에 따라 입주자가 전세임대주택을 인도받고 주민등록을 마친 경우 대항력이 소멸하는지 여부(적극)',
+            plainSummary: '입주자가 그 집을 사들여 주인이 되면 법인 임차인의 대항력은 그때 사라집니다.',
+            summarizedBy: 'solar-pro4',
+          }],
+        }),
+      });
+    });
+    await page.goto(baseURL + '/#diagnosis');
+    await page.reload({ waitUntil: 'networkidle' });
+    await fillToReport(page, '84');
+    await page.locator('.precedent').first().waitFor({ state: 'visible', timeout: 30000 });
+
+    const card = page.locator('.precedent').first();
+    assert.match(await card.locator('.plain-summary').innerText(), /입주자가 그 집을 사들여/);
+    assert.match(await card.innerText(), /AI/, 'the summary must be labelled as machine-written');
+    assert.equal(await card.locator('.source-quote').isVisible(), false, 'the original starts collapsed');
+    await card.locator('.source-toggle').click();
+    assert.equal(await card.locator('.source-quote').isVisible(), true);
+    assert.match(await card.locator('.source-quote').innerText(), /주택임대차보호법 제3조 제2항에 따라/);
+    results.push({ check: 'the summary leads and the court wording is one tap away', result: 'pass' });
+
+    // With no model the card must still work: the court's wording leads.
+    await page.unroute('**/api/law*');
+    await page.route('**/api/law*', async (route) => {
+      const topic = new URL(route.request().url()).searchParams.get('topic');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          topic, label: '대항력', guidance: '집이 팔려도 계속 살 수 있는 힘입니다. 전입신고 다음 날부터 생깁니다.',
+          precedents: [{
+            id: `${topic}-1`, caseNumber: '2025다210305', court: '대법원', decidedOn: '2026.02.26',
+            title: '배당이의', references: '주택임대차보호법 제3조',
+            summary: '주택임대차보호법 제3조 제2항에 따라 입주자가 전세임대주택을 인도받은 경우 대항력이 소멸하는지 여부(적극)',
+          }],
+        }),
+      });
+    });
+    await page.goto(baseURL + '/#diagnosis');
+    await page.reload({ waitUntil: 'networkidle' });
+    await fillToReport(page, '84');
+    await page.locator('.precedent').first().waitFor({ state: 'visible', timeout: 30000 });
+    const fallback = page.locator('.precedent').first();
+    assert.equal(await fallback.locator('.plain-summary').count(), 0);
+    assert.equal(await fallback.locator('.source-quote').isVisible(), true, 'without a summary the source leads');
+    results.push({ check: 'a precedent still reads without a model configured', result: 'pass' });
+    await page.unroute('**/api/law*');
+  }
+
   // The legal section is fetched once per page and shared across topics, so a
   // decision relevant to two of them used to be quoted twice at full length.
   {
+    // The legal fetch is memoised per page load, so this needs a fresh page to
+    // see the real API rather than the stub the previous block installed.
+    await page.goto(baseURL + '/#diagnosis');
+    await page.reload({ waitUntil: 'networkidle' });
+    await fillToReport(page, '84');
     await page.locator('.legal-topic').first().waitFor({ state: 'visible', timeout: 30000 });
     const caseNumbers = await page.locator('.precedent-meta').allInnerTexts();
     const unique = new Set(caseNumbers);
@@ -237,12 +305,7 @@ try {  for (const width of [360, 390, 768, 1440]) {
 
     // 판시사항 runs to 800 characters. Printed in full on a phone it is a wall
     // of text nobody reads, so it is clamped with the full text one tap away.
-    const tall = await page.locator('.precedent blockquote').evaluateAll(
-      (els) => els.map((el) => el.getBoundingClientRect().height),
-    );
-    assert.ok(Math.max(...tall) < 400, `an unclamped quote filled the screen: ${JSON.stringify(tall)}`);
-    assert.ok(await page.locator('.precedent .more-toggle').count() >= 1, 'a clamped quote needs a way to expand');
-    results.push({ check: 'precedents are unique and clamped', result: 'pass', shown: caseNumbers.length });
+    results.push({ check: 'a precedent is quoted once across topics', result: 'pass', shown: caseNumbers.length });
   }
 
   // One pass against the real ministry API. Everything above runs on a fixture

@@ -382,12 +382,13 @@ const LEGAL_TOPICS = ['opposing-power', 'priority', 'deposit-return', 'renewal']
 // contract, so re-running a diagnosis must not re-request them.
 let legalTopicsPromise = null;
 
-// 판시사항 runs from 100 to 800 characters. Printed in full on a phone one
-// decision fills the screen and none of them get read, so the quote is clamped
-// and the rest is one tap away. Nothing is cut from the text itself — this is
-// presentation, not summarising.
-const CLAMP_AFTER = 200;
-
+// A precedent card leads with the plain summary when a model produced one, and
+// keeps the court's own 판시사항 collapsed underneath. Both are always present:
+// a reader who doubts the summary can check it against the source without
+// leaving the page, and a reader who does not can move on.
+//
+// With no model configured plainSummary is absent and the court's wording
+// leads instead, which is how the section read before summaries existed.
 function renderPrecedent(precedent) {
   const card = document.createElement('article');
   card.className = 'precedent';
@@ -395,34 +396,37 @@ function renderPrecedent(precedent) {
   const meta = document.createElement('p');
   meta.className = 'precedent-meta';
   meta.textContent = `${precedent.court} ${precedent.decidedOn} 선고 ${precedent.caseNumber}`;
+  card.append(meta);
 
-  // The court's own words. Ministry text is never inserted as markup.
   const quote = document.createElement('blockquote');
+  quote.className = 'source-quote';
+  // Court text is never inserted as markup.
   quote.textContent = precedent.summary;
 
-  if (precedent.summary.length > CLAMP_AFTER) {
-    quote.classList.add('clamped');
+  if (precedent.plainSummary) {
+    const plain = document.createElement('p');
+    plain.className = 'plain-summary';
+    plain.textContent = precedent.plainSummary;
+
+    const badge = document.createElement('p');
+    badge.className = 'summary-badge';
+    badge.textContent = `AI가 아래 판시사항을 바꿔 쓴 문장입니다 · ${precedent.summarizedBy ?? 'AI'}`;
+
     const toggle = document.createElement('button');
     toggle.type = 'button';
-    toggle.className = 'more-toggle';
-    toggle.textContent = '판시사항 전체 보기';
+    toggle.className = 'source-toggle';
+    toggle.textContent = '대법원 판시사항 원문 보기';
     toggle.setAttribute('aria-expanded', 'false');
+    quote.hidden = true;
     toggle.addEventListener('click', () => {
-      const expanded = quote.classList.toggle('clamped') === false;
-      toggle.textContent = expanded ? '접기' : '판시사항 전체 보기';
-      toggle.setAttribute('aria-expanded', String(expanded));
+      quote.hidden = !quote.hidden;
+      toggle.textContent = quote.hidden ? '대법원 판시사항 원문 보기' : '원문 접기';
+      toggle.setAttribute('aria-expanded', String(!quote.hidden));
     });
-    card.append(meta, quote, toggle);
-    const refs = document.createElement('p');
-    refs.className = 'precedent-refs';
-    refs.textContent = `참조조문 ${precedent.references}`;
-    const link = document.createElement('a');
-    link.href = precedent.link;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = '판례 전문 보기 (국가법령정보센터)';
-    card.append(refs, link);
-    return card;
+
+    card.append(plain, badge, toggle, quote);
+  } else {
+    card.append(quote);
   }
 
   const refs = document.createElement('p');
@@ -435,7 +439,7 @@ function renderPrecedent(precedent) {
   link.rel = 'noopener noreferrer';
   link.textContent = '판례 전문 보기 (국가법령정보센터)';
 
-  card.append(meta, quote, refs, link);
+  card.append(refs, link);
   return card;
 }
 

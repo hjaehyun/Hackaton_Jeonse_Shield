@@ -8,6 +8,7 @@ import {
   TOPICS, SEARCH_URL, BODY_URL, selectPrecedents, normalizePrecedent,
 } from './law.js';
 import { cached } from './cache.js';
+import { summarize, SUMMARY_VERSION } from './summarize.js';
 
 // Search wide enough that filtering to 대법원 still leaves candidates, then
 // ask bodies for at most this many. Each body is one subrequest and the
@@ -90,6 +91,17 @@ async function callUpstream(env, topicKey, fetchImpl) {
     .filter(Boolean)
     .slice(0, PRECEDENTS_SHOWN);
 
+  // Plain-language summaries, if a model is configured. Each precedent keeps
+  // its 판시사항 either way: the summary is shown first and the court's own
+  // wording sits under it, so a reader can check one against the other.
+  const plain = await Promise.all(precedents.map((p) => summarize(env, p.summary, fetchImpl)));
+  precedents.forEach((p, index) => {
+    const result = plain[index];
+    if (!result) return;
+    p.plainSummary = result.text;
+    p.summarizedBy = result.model;
+  });
+
   return {
     topic: topicKey,
     label: topic.label,
@@ -109,7 +121,7 @@ export function fetchTopic(env, ctx, topicKey, fetchImpl = fetch) {
   return cached(
     env,
     ctx,
-    `law:v3:${topicKey}`,
+    `law:v4:${SUMMARY_VERSION}:${topicKey}`,
     CACHE_TTL_SECONDS,
     () => callUpstream(env, topicKey, fetchImpl),
   );
