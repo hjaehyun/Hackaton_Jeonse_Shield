@@ -372,6 +372,92 @@ function unknownState(headingText, lines) {
   return state;
 }
 
+// Which topics the report shows, in the order a tenant meets them. They are
+// fixed rather than derived from the verdict: these four apply to every
+// residential lease, and picking by verdict would imply the law changes with
+// the number, which it does not.
+const LEGAL_TOPICS = ['opposing-power', 'priority', 'deposit-return', 'renewal'];
+
+// Fetched once per page load and reused. Precedents do not depend on the
+// contract, so re-running a diagnosis must not re-request them.
+let legalTopicsPromise = null;
+
+function renderPrecedent(precedent) {
+  const card = document.createElement('article');
+  card.className = 'precedent';
+
+  const meta = document.createElement('p');
+  meta.className = 'precedent-meta';
+  meta.textContent = `${precedent.court} ${precedent.decidedOn} 선고 ${precedent.caseNumber}`;
+
+  // The court's own words. Ministry text is never inserted as markup.
+  const quote = document.createElement('blockquote');
+  quote.textContent = precedent.summary;
+
+  const refs = document.createElement('p');
+  refs.className = 'precedent-refs';
+  refs.textContent = `참조조문 ${precedent.references}`;
+
+  const link = document.createElement('a');
+  link.href = precedent.link;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = '판례 전문 보기 (국가법령정보센터)';
+
+  card.append(meta, quote, refs, link);
+  return card;
+}
+
+function renderLegalTopic(topic) {
+  const section = document.createElement('article');
+  section.className = 'legal-topic';
+
+  const heading = document.createElement('h3');
+  heading.textContent = topic.label;
+
+  const guidance = document.createElement('p');
+  guidance.className = 'legal-guidance';
+  guidance.textContent = topic.guidance;
+
+  section.append(heading, guidance);
+
+  if (topic.precedents.length === 0) {
+    const none = document.createElement('p');
+    none.className = 'field-hint';
+    none.textContent = '이 쟁점에 대한 대법원 판례를 찾지 못했습니다. 위 설명만 참고해 주세요.';
+    section.append(none);
+    return section;
+  }
+
+  topic.precedents.forEach((p) => section.append(renderPrecedent(p)));
+  return section;
+}
+
+async function loadLegalTopics() {
+  if (!legalTopicsPromise) {
+    legalTopicsPromise = Promise.all(
+      LEGAL_TOPICS.map((topic) => fetch(`/api/law?topic=${topic}`).then((r) => {
+        if (!r.ok) throw new Error(topic);
+        return r.json();
+      })),
+    );
+  }
+
+  const container = $('#legal-topics');
+  const status = $('#legal-status');
+  try {
+    const topics = await legalTopicsPromise;
+    container.replaceChildren(...topics.map(renderLegalTopic));
+    status.hidden = true;
+  } catch {
+    // Let the next visit try again rather than caching the failure.
+    legalTopicsPromise = null;
+    container.replaceChildren();
+    status.hidden = false;
+    status.textContent = '법률 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+  }
+}
+
 function renderMissingRatio(reason) {
   const warning = document.createElement('p');
   warning.className = 'ratio-warning';
@@ -424,6 +510,10 @@ function renderResult() {
   }
   $$('.check-item input').forEach((checkbox) => { checkbox.checked = false; });
   updateChecklist();
+
+  // Precedents do not depend on the contract, so this is fire-and-forget: the
+  // report renders immediately and the legal section fills in when it arrives.
+  loadLegalTopics();
 }
 
 function updateChecklist() {
