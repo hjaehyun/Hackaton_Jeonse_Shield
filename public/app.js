@@ -1,5 +1,5 @@
 import { jeonseRatio, verdict, tradeDistribution, similarPrices } from './lib/ratio.js';
-import { listComplexes, complexTransactions, monthRangeLabel } from './lib/aggregate.js';
+import { listComplexes, complexTransactions, monthRangeLabel, missingRatioReason } from './lib/aggregate.js';
 import { recentMonths } from './lib/months.js';
 
 const $ = (selector) => document.querySelector(selector);
@@ -69,12 +69,18 @@ function fail(selector, message) {
 // month of XML; the browser issues them together.
 const MONTHS = 6;
 
-// Rows for the district currently selected, keyed by lawdCd so switching back
-// to a district does not refetch. The Worker also caches, but this avoids the
-// round trip entirely.
+// Rows already fetched, keyed by lawdCd, so returning to a district costs
+// nothing. The Worker caches too, but this skips the round trip entirely.
+const rowsByDistrict = new Map();
+
 let monthlyRows = null;
 let complexes = [];
 let selectedComplex = null;
+
+// Abandoned loads are cancelled, not merely ignored. Twelve requests are in
+// flight per district; letting them finish after the user has moved on spends
+// the daily upstream quota on answers nobody will see.
+let inFlight = null;
 
 // Identifies the load a response belongs to. A district the user has moved on
 // from can still have a dozen requests in flight; without this, the slower one
@@ -93,6 +99,8 @@ function searchIndex(item) {
 function resetComplexes(message) {
   // Any load still in flight belongs to a selection that no longer exists.
   loadToken += 1;
+  inFlight?.abort();
+  inFlight = null;
   complexes = [];
   selectedComplex = null;
   monthlyRows = null;
@@ -102,54 +110,85 @@ function resetComplexes(message) {
   $('#complex-status').textContent = message;
 }
 
-async function fetchMonthRows(kind, lawdCd, ym) {
-  const response = await fetch(`/api/month?kind=${kind}&lawdCd=${lawdCd}&ym=${ym}`);
-  if (!response.ok) throw new Error(`${kind} ${ym}`);
+// A request that failed for a reason retrying cannot change must not tell the
+// user to retry. A deployment with no service key answers 503 forever.
+const LOAD_FAILURE_MESSAGE = {
+  KEY_NOT_CONFIGURED: '서버에 공공데이터포털 서비스키가 설정되지 않았습니다. 운영자에게 알려 주세요.',
+  INVALID_PARAMETERS: '조회 조건이 올바르지 않습니다. 페이지를 새로고침한 뒤 다시 선택해 주세요.',
+};
+const DEFAULT_LOAD_FAILURE = '실거래가를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+
+class LoadFailure extends Error {
+  constructor(code) {
+    super(code);
+    this.code = code;
+  }
+}
+
+async function fetchMonthRows(kind, lawdCd, ym, signal) {
+  const response = await fetch(`/api/month?kind=${kind}&lawdCd=${lawdCd}&ym=${ym}`, { signal });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new LoadFailure(body.error ?? `HTTP_${response.status}`);
+  }
   return (await response.json()).rows ?? [];
 }
 
+function showComplexes(cached) {
+  monthlyRows = cached;
+  complexes = listComplexes(cached.trades, cached.rents);
+  const range = monthRangeLabel(cached.months);
+  $('#complex-status').textContent = complexes.length
+    ? `${range} 거래가 있는 단지 ${format(complexes.length)}곳`
+    : `${range} 이 지역에는 아파트 거래 기록이 없습니다.`;
+  renderComplexes('');
+}
+
 async function loadComplexes(lawdCd) {
-  if (monthlyRows?.lawdCd === lawdCd) {
-    renderComplexes($('#complex-filter').value);
-    return;
-  }
   resetComplexes('단지를 불러오는 중입니다...');
   const token = (loadToken += 1);
+
+  const cached = rowsByDistrict.get(lawdCd);
+  if (cached) {
+    showComplexes(cached);
+    return;
+  }
+
+  const controller = new AbortController();
+  inFlight = controller;
 
   const months = recentMonths(MONTHS);
   // Fanning out here is the point: one Worker invocation per region-month.
   const requests = months.flatMap((ym) => [
-    fetchMonthRows('trade', lawdCd, ym).then((rows) => ({ kind: 'trade', rows })),
-    fetchMonthRows('rent', lawdCd, ym).then((rows) => ({ kind: 'rent', rows })),
+    fetchMonthRows('trade', lawdCd, ym, controller.signal).then((rows) => ({ kind: 'trade', rows })),
+    fetchMonthRows('rent', lawdCd, ym, controller.signal).then((rows) => ({ kind: 'rent', rows })),
   ]);
 
   let settled;
   try {
     settled = await Promise.all(requests);
-  } catch {
+  } catch (error) {
     // Never fall back to partial data: a short range moves the median.
     if (token !== loadToken) return;
     monthlyRows = null;
-    $('#complex-status').textContent = '실거래가를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+    $('#complex-status').textContent = error instanceof LoadFailure
+      ? LOAD_FAILURE_MESSAGE[error.code] ?? DEFAULT_LOAD_FAILURE
+      : DEFAULT_LOAD_FAILURE;
     return;
   }
 
   // The user moved on while these were in flight. Their result is not ours.
   if (token !== loadToken) return;
+  inFlight = null;
 
-  monthlyRows = {
+  const rows = {
     lawdCd,
     months,
     trades: settled.filter((r) => r.kind === 'trade').flatMap((r) => r.rows),
     rents: settled.filter((r) => r.kind === 'rent').flatMap((r) => r.rows),
   };
-  complexes = listComplexes(monthlyRows.trades, monthlyRows.rents);
-
-  const range = monthRangeLabel(months);
-  $('#complex-status').textContent = complexes.length
-    ? `${range} 거래가 있는 단지 ${format(complexes.length)}곳`
-    : `${range} 이 지역에는 아파트 거래 기록이 없습니다.`;
-  renderComplexes('');
+  rowsByDistrict.set(lawdCd, rows);
+  showComplexes(rows);
 }
 
 function renderComplexes(filter) {
@@ -309,32 +348,9 @@ function renderDistribution(stats, deposit) {
 // Why a ratio could not be produced. The distinction matters: "not enough
 // samples" reads like a defect when the real reason is that this complex has
 // not sold in the window we looked at.
-// Returns the two lines as plain strings. The caller puts them on the page as
-// text nodes: the first line names the complex, and that name comes from the
-// ministry, so it must never be interpolated into markup.
-function missingRatioReason(trades, size) {
-  if (trades.length === 0) {
-    return {
-      heading: '매매 거래가 없어 전세가율을 낼 수 없습니다',
-      lines: [
-        `${contract.apartment}은(는) ${contract.rangeLabel} 매매 거래가 없습니다.`,
-        '전세가율은 같은 단지 매매가를 분모로 쓰기 때문에 계산할 수 없습니다.',
-      ],
-    };
-  }
-  return {
-    heading: '표본 부족 — 판정 불가',
-    lines: [
-      `전용 ${format(contract.area)}㎡ 부근 매매가 ${size}건뿐입니다.`,
-      '3건 미만의 중위가는 믿을 수 없어 전세가율을 표시하지 않습니다.',
-    ],
-  };
-}
-
-function renderMissingRatio(reason) {
-  const target = $('#ratio-content');
-  target.replaceChildren();
-
+// Built from nodes, not markup: the lines can contain a complex name, and that
+// comes from the ministry.
+function unknownState(headingText, lines) {
   const state = document.createElement('div');
   state.className = 'unknown-state';
 
@@ -344,21 +360,24 @@ function renderMissingRatio(reason) {
   symbol.textContent = '—';
 
   const heading = document.createElement('h3');
-  heading.textContent = reason.heading;
+  heading.textContent = headingText;
 
   const detail = document.createElement('p');
-  reason.lines.forEach((line, index) => {
+  lines.forEach((line, index) => {
     if (index > 0) detail.append(document.createElement('br'));
     detail.append(document.createTextNode(line));
   });
 
   state.append(symbol, heading, detail);
+  return state;
+}
 
+function renderMissingRatio(reason) {
   const warning = document.createElement('p');
   warning.className = 'ratio-warning';
   warning.textContent = '표본을 늘리려고 면적 범위를 넓히거나 가격을 추정하지 않습니다.';
 
-  target.append(state, warning);
+  $('#ratio-content').replaceChildren(unknownState(reason.heading, reason.lines), warning);
 }
 
 function renderResult() {
@@ -379,9 +398,22 @@ function renderResult() {
   $('#sample-count').textContent = `표본 ${size}건`;
   $('#ratio-card').dataset.verdict = decision.level;
   if (decision.level === 'unknown') {
-    const reason = missingRatioReason(trades, size);
+    const reason = missingRatioReason({
+      name: contract.apartment,
+      rangeLabel: contract.rangeLabel,
+      area: contract.area,
+      tradeCount: trades.length,
+      sampleSize: size,
+    });
     renderMissingRatio(reason);
-    $('#distribution-content').innerHTML = '<div class="unknown-state"><span class="unknown-symbol" aria-hidden="true">—</span><h3>거래 분포를 표시할 수 없습니다</h3><p>표본 3건 이상이 필요합니다.<br>매매가격 통계와 보증금 위치를 표시하지 않습니다.</p></div>';
+    // Same reason as the ratio card. Two cards explaining one blank report
+    // differently is how a reader concludes the page is broken.
+    $('#distribution-content').replaceChildren(unknownState(
+      '거래 분포를 표시할 수 없습니다',
+      reason.kind === 'no-sales' ? ['매매 거래가 없어 분포를 그릴 수 없습니다.']
+        : reason.kind === 'no-comparable' ? [`전용 ${format(contract.area)}㎡ 부근 거래가 없어 분포를 그릴 수 없습니다.`]
+        : ['표본 3건 이상이 필요합니다.', '매매가격 통계와 보증금 위치를 표시하지 않습니다.'],
+    ));
   } else {
     // Truncate to one decimal so rounding never displays the next verdict boundary.
     const displayRatio = Math.floor(result.ratio * 10) / 10;

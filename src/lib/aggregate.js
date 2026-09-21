@@ -47,8 +47,64 @@ export function listComplexes(tradeRows, rentRows) {
 
   return [...byKey.values()]
     .map(({ at, ...rest }) => rest)
+    // The counts are what a user reads to decide whether a complex is worth
+    // picking, so an entry that can only show 0 and 0 — every one of its rows
+    // was a cancelled sale — has nothing to offer and is dropped.
+    .filter((entry) => entry.tradeCount + entry.rentCount > 0)
     .sort((a, b) => (b.tradeCount + b.rentCount) - (a.tradeCount + a.rentCount)
       || a.key.localeCompare(b.key));
+}
+
+/**
+ * Why no ratio could be produced. Three situations reach the same blank report
+ * and they are not the same problem, so they do not share a message:
+ *
+ *   no-sales       the complex has not sold in the window at all
+ *   no-comparable  it sells, but nothing within ±10% of this area
+ *   thin-sample    it sells at this size, just too few times to trust a median
+ *
+ * Collapsing the middle case into the last produced '부근 매매가 0건뿐입니다',
+ * which reads as a contradiction.
+ *
+ * Returns plain strings; the caller renders them as text nodes because `name`
+ * comes from the ministry.
+ *
+ * @param {{name: string, rangeLabel: string, area: number, tradeCount: number, sampleSize: number}} context
+ */
+export function missingRatioReason({ name, rangeLabel, area, tradeCount, sampleSize }) {
+  const size = (value) => new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 }).format(value);
+
+  if (tradeCount === 0) {
+    return {
+      kind: 'no-sales',
+      heading: '매매 거래가 없어 전세가율을 낼 수 없습니다',
+      lines: [
+        `${name}은(는) ${rangeLabel} 매매 거래가 없습니다.`,
+        '전세가율은 같은 단지 매매가를 분모로 쓰기 때문에 계산할 수 없습니다.',
+      ],
+    };
+  }
+
+  if (sampleSize === 0) {
+    return {
+      kind: 'no-comparable',
+      heading: '이 면적의 매매 거래가 없습니다',
+      lines: [
+        `${name}은(는) ${rangeLabel} 매매 ${size(tradeCount)}건이 있지만,`
+          + ` 전용 ${size(area)}㎡ 부근(±10%)에는 없습니다.`,
+        '면적이 다른 거래를 대신 쓰지 않습니다. 계약서상 전용면적을 다시 확인해 주세요.',
+      ],
+    };
+  }
+
+  return {
+    kind: 'thin-sample',
+    heading: '표본 부족 — 판정 불가',
+    lines: [
+      `전용 ${size(area)}㎡ 부근 매매가 ${size(sampleSize)}건뿐입니다.`,
+      '3건 미만의 중위가는 믿을 수 없어 전세가율을 표시하지 않습니다.',
+    ],
+  };
 }
 
 /**

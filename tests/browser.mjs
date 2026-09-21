@@ -305,6 +305,15 @@ try {  for (const width of [360, 390, 768, 1440]) {
   await page.unroute('**/api/month*');
   results.push({ check: 'the no-sales message escapes the complex name', result: 'pass' });
 
+  // Sales exist, but none near the entered size. This used to read
+  // '부근 매매가 0건뿐입니다', which parses as a contradiction.
+  const wrongSize = await reportWith([50000, 60000, 70000, 80000], '120');
+  assert.doesNotMatch(wrongSize, /0건뿐/, `a contradictory count reached the screen: ${wrongSize}`);
+  assert.match(wrongSize, /4건/, 'it should say the complex does sell');
+  const wrongSizeDistribution = await page.locator('#distribution-content').innerText();
+  assert.match(wrongSizeDistribution, /부근 거래가 없어/, `the two cards disagree: ${wrongSizeDistribution}`);
+  results.push({ check: 'sales at another size are not reported as zero sales', result: 'pass' });
+
   const enough = await reportWith([50000, 60000, 70000, 80000]);
   assert.doesNotMatch(enough, /판정 불가/);
   assert.equal(await page.locator('.ratio-value').count(), 1);

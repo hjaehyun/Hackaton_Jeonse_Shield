@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listComplexes, complexTransactions, monthRangeLabel } from '../src/lib/aggregate.js';
+import {
+  listComplexes, complexTransactions, monthRangeLabel, missingRatioReason,
+} from '../src/lib/aggregate.js';
 
 const trade = (over = {}) => ({
   name: '삼익', key: '삼익', area: 84, price: 60000, floor: 3,
@@ -46,6 +48,19 @@ test('listComplexes counts a cancelled trade as evidence but not as a trade', ()
   assert.equal(list[0].cancelledCount, 1);
 });
 
+// The counts are what a user reads to judge whether a complex is worth
+// picking. An entry showing 0 and 0 cannot justify its own presence.
+test('listComplexes omits a complex whose only rows were cancelled', () => {
+  assert.deepEqual(listComplexes([trade({ cancelled: true }), trade({ cancelled: true })], []), []);
+});
+
+test('listComplexes keeps a complex that has rentals but no sales', () => {
+  const list = listComplexes([], [rent()]);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].rentCount, 1);
+  assert.equal(list[0].tradeCount, 0);
+});
+
 test('listComplexes tolerates empty and malformed input', () => {
   assert.deepEqual(listComplexes([], []), []);
   assert.deepEqual(listComplexes(null, undefined), []);
@@ -89,4 +104,39 @@ test('monthRangeLabel describes the window the rows came from', () => {
   assert.equal(monthRangeLabel(['202609', '202608', '202607']), '2026.07 ~ 2026.09');
   assert.equal(monthRangeLabel(['202601']), '2026.01');
   assert.equal(monthRangeLabel([]), null);
+});
+
+// Three different situations produce a blank ratio and they must not share a
+// message: no sales at all, sales but none at this size, and too few at this
+// size. '0건뿐입니다' for the middle one reads as a contradiction.
+const ctx = { name: '삼익', rangeLabel: '2026.04 ~ 2026.09', area: 84 };
+
+test('missingRatioReason names a complex that has not sold at all', () => {
+  const reason = missingRatioReason({ ...ctx, tradeCount: 0, sampleSize: 0 });
+  assert.equal(reason.kind, 'no-sales');
+  assert.match(reason.lines.join(' '), /삼익/);
+  assert.match(reason.lines.join(' '), /2026\.04 ~ 2026\.09/);
+});
+
+test('missingRatioReason separates "sold, but not at this size" from a thin sample', () => {
+  const noneHere = missingRatioReason({ ...ctx, tradeCount: 30, sampleSize: 0 });
+  assert.equal(noneHere.kind, 'no-comparable');
+  assert.doesNotMatch(noneHere.lines.join(' '), /0건뿐/);
+  assert.match(noneHere.lines.join(' '), /30건/, 'it should say the complex does sell');
+
+  const thin = missingRatioReason({ ...ctx, tradeCount: 30, sampleSize: 2 });
+  assert.equal(thin.kind, 'thin-sample');
+  assert.match(thin.lines.join(' '), /2건/);
+});
+
+test('missingRatioReason always supplies a heading and at least one line', () => {
+  for (const input of [
+    { ...ctx, tradeCount: 0, sampleSize: 0 },
+    { ...ctx, tradeCount: 5, sampleSize: 0 },
+    { ...ctx, tradeCount: 5, sampleSize: 1 },
+  ]) {
+    const reason = missingRatioReason(input);
+    assert.ok(reason.heading.length > 0);
+    assert.ok(reason.lines.length >= 1);
+  }
 });

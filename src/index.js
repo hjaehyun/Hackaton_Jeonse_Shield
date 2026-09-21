@@ -55,6 +55,10 @@ app.get('/api/month', async (c) => {
 
   try {
     const rows = await fetchMonth(c.env, executionCtxOrNull(c), kind, lawdCd, ym, transport(c.env));
+    // State the lifetime rather than leave it to heuristics. An hour is short
+    // enough that raising the row limit reaches clients the same day, and long
+    // enough to absorb a user walking back and forth between districts.
+    c.header('Cache-Control', 'public, max-age=3600');
     return c.json({ kind, lawdCd, ym, rows });
   } catch (error) {
     // Never echo the cause. Both the request URL and anything fetch throws can
