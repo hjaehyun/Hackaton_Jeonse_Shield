@@ -227,6 +227,24 @@ try {  for (const width of [360, 390, 768, 1440]) {
   results.push({ check: 'ministry-supplied names escaped; no HTML execution', result: 'pass' });
   await page.unroute('**/api/month*');
 
+  // The legal section is fetched once per page and shared across topics, so a
+  // decision relevant to two of them used to be quoted twice at full length.
+  {
+    await page.locator('.legal-topic').first().waitFor({ state: 'visible', timeout: 30000 });
+    const caseNumbers = await page.locator('.precedent-meta').allInnerTexts();
+    const unique = new Set(caseNumbers);
+    assert.equal(caseNumbers.length, unique.size, `the same precedent is shown twice: ${JSON.stringify(caseNumbers)}`);
+
+    // 판시사항 runs to 800 characters. Printed in full on a phone it is a wall
+    // of text nobody reads, so it is clamped with the full text one tap away.
+    const tall = await page.locator('.precedent blockquote').evaluateAll(
+      (els) => els.map((el) => el.getBoundingClientRect().height),
+    );
+    assert.ok(Math.max(...tall) < 400, `an unclamped quote filled the screen: ${JSON.stringify(tall)}`);
+    assert.ok(await page.locator('.precedent .more-toggle').count() >= 1, 'a clamped quote needs a way to expand');
+    results.push({ check: 'precedents are unique and clamped', result: 'pass', shown: caseNumbers.length });
+  }
+
   // One pass against the real ministry API. Everything above runs on a fixture
   // so layout and verdict assertions stay deterministic; this proves the wiring
   // actually reaches data.go.kr and produces a report from it.

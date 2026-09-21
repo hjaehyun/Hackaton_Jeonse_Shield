@@ -382,6 +382,12 @@ const LEGAL_TOPICS = ['opposing-power', 'priority', 'deposit-return', 'renewal']
 // contract, so re-running a diagnosis must not re-request them.
 let legalTopicsPromise = null;
 
+// 판시사항 runs from 100 to 800 characters. Printed in full on a phone one
+// decision fills the screen and none of them get read, so the quote is clamped
+// and the rest is one tap away. Nothing is cut from the text itself — this is
+// presentation, not summarising.
+const CLAMP_AFTER = 200;
+
 function renderPrecedent(precedent) {
   const card = document.createElement('article');
   card.className = 'precedent';
@@ -393,6 +399,31 @@ function renderPrecedent(precedent) {
   // The court's own words. Ministry text is never inserted as markup.
   const quote = document.createElement('blockquote');
   quote.textContent = precedent.summary;
+
+  if (precedent.summary.length > CLAMP_AFTER) {
+    quote.classList.add('clamped');
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'more-toggle';
+    toggle.textContent = '판시사항 전체 보기';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.addEventListener('click', () => {
+      const expanded = quote.classList.toggle('clamped') === false;
+      toggle.textContent = expanded ? '접기' : '판시사항 전체 보기';
+      toggle.setAttribute('aria-expanded', String(expanded));
+    });
+    card.append(meta, quote, toggle);
+    const refs = document.createElement('p');
+    refs.className = 'precedent-refs';
+    refs.textContent = `참조조문 ${precedent.references}`;
+    const link = document.createElement('a');
+    link.href = precedent.link;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = '판례 전문 보기 (국가법령정보센터)';
+    card.append(refs, link);
+    return card;
+  }
 
   const refs = document.createElement('p');
   refs.className = 'precedent-refs';
@@ -408,7 +439,7 @@ function renderPrecedent(precedent) {
   return card;
 }
 
-function renderLegalTopic(topic) {
+function renderLegalTopic(topic, alreadyShown) {
   const section = document.createElement('article');
   section.className = 'legal-topic';
 
@@ -421,15 +452,23 @@ function renderLegalTopic(topic) {
 
   section.append(heading, guidance);
 
-  if (topic.precedents.length === 0) {
+  // One decision often applies to two topics — 대항력 and 우선변제권 turn on
+  // the same article — and quoting 600 characters twice on one page helps
+  // nobody. The first topic that needs it keeps it.
+  const fresh = topic.precedents.filter((p) => !alreadyShown.has(p.id));
+  fresh.forEach((p) => alreadyShown.add(p.id));
+
+  if (fresh.length === 0) {
     const none = document.createElement('p');
     none.className = 'field-hint';
-    none.textContent = '이 쟁점에 대한 대법원 판례를 찾지 못했습니다. 위 설명만 참고해 주세요.';
+    none.textContent = topic.precedents.length === 0
+      ? '이 쟁점에 대한 대법원 판례를 찾지 못했습니다. 위 설명만 참고해 주세요.'
+      : '이 쟁점의 판례는 위 항목에서 이미 인용했습니다.';
     section.append(none);
     return section;
   }
 
-  topic.precedents.forEach((p) => section.append(renderPrecedent(p)));
+  fresh.forEach((p) => section.append(renderPrecedent(p)));
   return section;
 }
 
@@ -447,7 +486,8 @@ async function loadLegalTopics() {
   const status = $('#legal-status');
   try {
     const topics = await legalTopicsPromise;
-    container.replaceChildren(...topics.map(renderLegalTopic));
+    const shown = new Set();
+    container.replaceChildren(...topics.map((topic) => renderLegalTopic(topic, shown)));
     status.hidden = true;
   } catch {
     // Let the next visit try again rather than caching the failure.
