@@ -333,6 +333,14 @@ try {  for (const width of [360, 390, 768, 1440]) {
   assert.ok(!/mockTrades/.test(bundled), 'mockTrades is still bundled');
   results.push({ check: 'no mock transactions remain in the bundle', result: 'pass' });
 
+  // Copy written before the law API was wired called the section a placeholder.
+  // A reader who has just read four Supreme Court rulings and then meets the
+  // line '연동 준비 중' concludes the page is broken, not that the copy is stale.
+  const markup = await page.evaluate(() => fetch('/').then((r) => r.text()));
+  assert.ok(!/준비 중/.test(markup), 'a shipped feature is still described as pending');
+  assert.ok(!/자리표시자/.test(markup), 'a live section is still described as a placeholder');
+  results.push({ check: 'no pending-feature copy survives for shipped features', result: 'pass' });
+
   // A missing ratio has to say which kind of missing it is. 'not enough
   // samples' reads like a bug when the real reason is that the complex simply
   // has no sales.
