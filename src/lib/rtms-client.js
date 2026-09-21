@@ -57,7 +57,12 @@ async function callUpstream(env, kind, lawdCd, ym, fetchImpl) {
   try {
     response = await fetchImpl(url.toString(), {
       signal: AbortSignal.timeout(TIMEOUT_MS),
-      redirect: 'error',
+      // 'manual' rather than 'error': workerd rejects redirect: 'error' at the
+      // fetch call, and Node does not, so a unit test cannot catch it. Either
+      // way a redirect must not be followed — the URL carries the service key
+      // and following one would hand it to whatever host the redirect names.
+      // With 'manual' the 3xx comes back as a non-ok response and fails below.
+      redirect: 'manual',
     });
     xml = await response.text();
   } catch {
