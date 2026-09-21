@@ -47,12 +47,39 @@ async function fillToReport(page, area, deposit = '35000', rent = '0') {
   await page.locator('#result-screen').waitFor({ state: 'visible' });
 }
 
-try {
-  for (const width of [360, 390, 768, 1440]) {
+// The layout and verdict checks need a fixed distribution, so the width loop
+// serves one. These are the numbers the old in-page mock used, moved behind
+// the API where the real rows now come from. A separate check further down
+// exercises the live ministry API.
+const FIXTURE_NAME = '시험단지';
+const FIXTURE_TRADES = [
+  [82, 48000], [84, 51000], [84.5, 53000], [83, 56000], [85, 58000], [84, 60000],
+  [84, 60000], [86, 62000], [83.5, 64000], [84, 66000], [85, 68000], [84, 72000],
+  [59, 39000], [59.5, 41000],
+];
+async function serveFixture(page) {
+  // Only one of the six months carries rows. Repeating them every month would
+  // multiply every sample count by six.
+  let seeded = null;
+  await page.route('**/api/month*', async (route) => {
+    const url = new URL(route.request().url());
+    const kind = url.searchParams.get('kind');
+    const ym = url.searchParams.get('ym');
+    if (seeded === null) seeded = ym;
+    const base = { name: FIXTURE_NAME, key: FIXTURE_NAME, floor: 3, year: 2026, month: 6 };
+    const rows = ym !== seeded ? [] : kind === 'trade'
+      ? FIXTURE_TRADES.map(([area, price], i) => ({ ...base, area, price, day: 1 + i, cancelled: false }))
+      : [{ ...base, area: 84, deposit: 35000, monthlyRent: 0, day: 20 }];
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind, rows }) });
+  });
+}
+
+try {  for (const width of [360, 390, 768, 1440]) {
     const context = await browser.newContext({ viewport: { width, height: 900 }, deviceScaleFactor: 1 });
     const page = await context.newPage();
     page.on('pageerror', (e) => errors.push(e.message));
     page.on('request', (request) => { if (!request.url().startsWith(baseURL)) externalRequests.push(request.url()); });
+    await serveFixture(page);
     await page.goto(baseURL, { waitUntil: 'networkidle' });
     await fit(page, `${width}px landing`);
     if ([360, 1440].includes(width)) await capture(page, `landing-${width}`);
@@ -199,6 +226,70 @@ try {
   assert.equal(await page.locator('#contract-summary img').count(), 0);
   results.push({ check: 'ministry-supplied names escaped; no HTML execution', result: 'pass' });
   await page.unroute('**/api/month*');
+
+  // One pass against the real ministry API. Everything above runs on a fixture
+  // so layout and verdict assertions stay deterministic; this proves the wiring
+  // actually reaches data.go.kr and produces a report from it.
+  await page.goto(baseURL + '/#diagnosis');
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.selectOption('#sido-select', '서울특별시');
+  await page.selectOption('#district-select', '11110');
+  await clickNext(page);
+  const liveName = await pickComplex(page);
+  await clickNext(page);
+  await page.fill('#area-input', '84');
+  await page.fill('#deposit-input', '35000');
+  await page.fill('#rent-input', '0');
+  await clickNext(page);
+  await page.locator('#result-screen').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#contract-summary').innerText(), new RegExp(liveName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(await page.locator('#data-provenance').innerText(), /국토교통부 실거래가 · \d{4}\.\d{2} ~ \d{4}\.\d{2}/);
+  results.push({ check: 'a report is produced from the live ministry API', result: 'pass', liveName });
+
+  // The mock array made every contract produce the same number. Its absence is
+  // the only way to be sure a displayed ratio came from the ministry's data.
+  const bundled = await page.evaluate(() => fetch('/app.js').then((r) => r.text()));
+  assert.ok(!/mockTrades/.test(bundled), 'mockTrades is still bundled');
+  results.push({ check: 'no mock transactions remain in the bundle', result: 'pass' });
+
+  // A missing ratio has to say which kind of missing it is. 'not enough
+  // samples' reads like a bug when the real reason is that the complex simply
+  // has no sales.
+  async function reportWith(trades, area = '84') {
+    // Rows go into a single month; repeating them across the six-month window
+    // would multiply the sample count and defeat the point of the check.
+    let seededMonth = null;
+    await page.route('**/api/month*', async (route) => {
+      const url = new URL(route.request().url());
+      const kind = url.searchParams.get('kind');
+      const ym = url.searchParams.get('ym');
+      if (seededMonth === null) seededMonth = ym;
+      const base = { name: '표본시험단지', key: '표본시험단지', floor: 3, year: 2026, month: 6, day: 17 };
+      const rows = ym !== seededMonth ? [] : kind === 'trade'
+        ? trades.map((price, i) => ({ ...base, area: 84, price, day: 10 + i, cancelled: false }))
+        : [{ ...base, area: 84, deposit: 35000, monthlyRent: 0 }];
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind, rows }) });
+    });
+    await page.goto(baseURL + '/#diagnosis');
+    await page.reload({ waitUntil: 'networkidle' });
+    await fillToReport(page, area);
+    const text = await page.locator('#ratio-content').innerText();
+    await page.unroute('**/api/month*');
+    return text;
+  }
+
+  const noSales = await reportWith([]);
+  assert.match(noSales, /매매 거래가 없어/, `expected a 'no sales' explanation, got: ${noSales}`);
+  assert.equal(await page.locator('.ratio-value').count(), 0);
+
+  const thinSales = await reportWith([60000, 61000]);
+  assert.match(thinSales, /2건/, `expected the sample count in the explanation, got: ${thinSales}`);
+  assert.equal(await page.locator('.ratio-value').count(), 0);
+
+  const enough = await reportWith([50000, 60000, 70000, 80000]);
+  assert.doesNotMatch(enough, /판정 불가/);
+  assert.equal(await page.locator('.ratio-value').count(), 1);
+  results.push({ check: 'a missing ratio explains which reason applies', result: 'pass' });
 
   // Switching districts while the first one is still loading must not let the
   // slower response repaint the list. Otherwise the user sees one district's

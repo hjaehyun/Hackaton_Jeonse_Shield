@@ -6,23 +6,6 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const format = (number) => new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 }).format(number);
 const money = (number) => `${format(number)}만원`;
-// Fixed fictional transactions. Not generated from or matched to user-entered prices/names.
-const mockTrades = [
-  { name: '가상 단지', area: 82, price: 48000 },
-  { name: '가상 단지', area: 84, price: 51000 },
-  { name: '가상 단지', area: 84.5, price: 53000 },
-  { name: '가상 단지', area: 83, price: 56000 },
-  { name: '가상 단지', area: 85, price: 58000 },
-  { name: '가상 단지', area: 84, price: 60000 },
-  { name: '가상 단지', area: 84, price: 60000 },
-  { name: '가상 단지', area: 86, price: 62000 },
-  { name: '가상 단지', area: 83.5, price: 64000 },
-  { name: '가상 단지', area: 84, price: 66000 },
-  { name: '가상 단지', area: 85, price: 68000 },
-  { name: '가상 단지', area: 84, price: 72000 },
-  { name: '가상 단지', area: 59, price: 39000 },
-  { name: '가상 단지', area: 59.5, price: 41000 },
-];
 let regions = [];
 let step = 1;
 let contract = null;
@@ -241,11 +224,17 @@ $('#diagnosis-form').addEventListener('submit', (event) => {
   }
   const group = regions.find((entry) => entry.sido === $('#sido-select').value);
   const district = group.items.find((entry) => entry.code === $('#district-select').value);
+  // The rows are already in memory: the complex list was built from them. No
+  // second round trip, and the report cannot disagree with the list it came from.
+  const picked = complexTransactions(selectedComplex.key, monthlyRows.trades, monthlyRows.rents);
   contract = {
     sido: group.sido, district: district.name, lawdCd: district.code,
-    apartment: selectedComplex.name, complexKey: selectedComplex.key,
+    apartment: picked.name ?? selectedComplex.name, complexKey: selectedComplex.key,
     area: Number($('#area-input').value),
     deposit: Number($('#deposit-input').value), rent: Number($('#rent-input').value),
+    trades: picked.trades, rents: picked.rents,
+    cancelledCount: picked.cancelledCount,
+    rangeLabel: monthRangeLabel(monthlyRows.months),
   };
   location.hash = 'result';
 });
@@ -317,18 +306,44 @@ function renderDistribution(stats, deposit) {
     <p class="distribution-note">25%·75%는 실제 관측값(nearest-rank)을 사용합니다.<br>내 보증금 마커는 매매가와의 비교이며 전월세 백분위가 아닙니다.</p>`;
 }
 
+// Why a ratio could not be produced. The distinction matters: "not enough
+// samples" reads like a defect when the real reason is that this complex has
+// not sold in the window we looked at.
+function missingRatioReason(trades, size) {
+  if (trades.length === 0) {
+    return {
+      heading: '매매 거래가 없어 전세가율을 낼 수 없습니다',
+      detail: `${contract.apartment}은(는) ${contract.rangeLabel} 매매 거래가 없습니다.`
+        + '<br>전세가율은 같은 단지 매매가를 분모로 쓰기 때문에 계산할 수 없습니다.',
+    };
+  }
+  return {
+    heading: '표본 부족 — 판정 불가',
+    detail: `전용 ${format(contract.area)}㎡ 부근 매매가 ${size}건뿐입니다.`
+      + '<br>3건 미만의 중위가는 믿을 수 없어 전세가율을 표시하지 않습니다.',
+  };
+}
+
 function renderResult() {
-  const result = jeonseRatio(contract.deposit, mockTrades, contract.area);
+  const trades = contract.trades ?? [];
+  const result = jeonseRatio(contract.deposit, trades, contract.area);
   const decision = verdict(result);
-  const size = similarPrices(mockTrades, contract.area).length;
-  const stats = tradeDistribution(mockTrades, contract.area);
-  // User-provided text is never inserted as HTML.
+  const size = similarPrices(trades, contract.area).length;
+  const stats = tradeDistribution(trades, contract.area);
+  // Ministry-supplied text is never inserted as HTML.
   $('#contract-summary').textContent = `${contract.sido} ${contract.district === contract.sido ? '' : contract.district} · ${contract.apartment} · 전용 ${format(contract.area)}㎡ · ${contract.rent === 0 ? '전세' : '월세'} · 보증금 ${money(contract.deposit)}${contract.rent > 0 ? ` · 월세 ${money(contract.rent)}` : ''}`;
+  // Where the numbers came from, including rows that were removed. A report
+  // that quietly drops cancelled deals cannot be checked against the source.
+  const provenance = [`국토교통부 실거래가 · ${contract.rangeLabel}`, `매매 ${format(contract.trades.length)}건`];
+  if (contract.cancelledCount > 0) provenance.push(`해제 거래 ${format(contract.cancelledCount)}건 제외`);
+  $('#data-provenance').textContent = provenance.join(' · ');
+
   $('#monthly-rent-note').hidden = contract.rent === 0;
   $('#sample-count').textContent = `표본 ${size}건`;
   $('#ratio-card').dataset.verdict = decision.level;
   if (decision.level === 'unknown') {
-    $('#ratio-content').innerHTML = `<div class="unknown-state"><span class="unknown-symbol" aria-hidden="true">—</span><h3>표본 부족 — 판정 불가</h3><p>유사 면적 매매 거래 표본 ${size}건<br>표본 3건 미만으로 전세가율을 표시하지 않습니다.</p></div><p class="ratio-warning">표본을 늘리려고 면적 범위를 넓히거나 가격을 추정하지 않습니다.</p>`;
+    const reason = missingRatioReason(trades, size);
+    $('#ratio-content').innerHTML = `<div class="unknown-state"><span class="unknown-symbol" aria-hidden="true">—</span><h3>${reason.heading}</h3><p>${reason.detail}</p></div><p class="ratio-warning">표본을 늘리려고 면적 범위를 넓히거나 가격을 추정하지 않습니다.</p>`;
     $('#distribution-content').innerHTML = '<div class="unknown-state"><span class="unknown-symbol" aria-hidden="true">—</span><h3>거래 분포를 표시할 수 없습니다</h3><p>표본 3건 이상이 필요합니다.<br>매매가격 통계와 보증금 위치를 표시하지 않습니다.</p></div>';
   } else {
     // Truncate to one decimal so rounding never displays the next verdict boundary.
