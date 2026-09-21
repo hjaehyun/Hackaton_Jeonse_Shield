@@ -286,6 +286,25 @@ try {  for (const width of [360, 390, 768, 1440]) {
   assert.match(thinSales, /2건/, `expected the sample count in the explanation, got: ${thinSales}`);
   assert.equal(await page.locator('.ratio-value').count(), 0);
 
+  // The no-sales message names the complex. That name comes from the ministry,
+  // so the message is a second place untrusted text reaches the page, and it is
+  // the one path the escaping check above never walks.
+  await page.route('**/api/month*', async (route) => {
+    const kind = new URL(route.request().url()).searchParams.get('kind');
+    const rows = kind === 'trade' ? [] : [{
+      name: '<img src=x onerror=alert(1)>', key: 'hostile-empty',
+      area: 84, deposit: 35000, monthlyRent: 0, floor: 3, year: 2026, month: 6, day: 17,
+    }];
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind, rows }) });
+  });
+  await page.goto(baseURL + '/#diagnosis');
+  await page.reload({ waitUntil: 'networkidle' });
+  await fillToReport(page, '84');
+  assert.equal(await page.locator('#ratio-content img').count(), 0, 'the no-sales message rendered supplied markup');
+  assert.match(await page.locator('#ratio-content').innerText(), /<img src=x/);
+  await page.unroute('**/api/month*');
+  results.push({ check: 'the no-sales message escapes the complex name', result: 'pass' });
+
   const enough = await reportWith([50000, 60000, 70000, 80000]);
   assert.doesNotMatch(enough, /판정 불가/);
   assert.equal(await page.locator('.ratio-value').count(), 1);

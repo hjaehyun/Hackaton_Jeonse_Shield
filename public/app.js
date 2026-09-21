@@ -309,19 +309,56 @@ function renderDistribution(stats, deposit) {
 // Why a ratio could not be produced. The distinction matters: "not enough
 // samples" reads like a defect when the real reason is that this complex has
 // not sold in the window we looked at.
+// Returns the two lines as plain strings. The caller puts them on the page as
+// text nodes: the first line names the complex, and that name comes from the
+// ministry, so it must never be interpolated into markup.
 function missingRatioReason(trades, size) {
   if (trades.length === 0) {
     return {
       heading: '매매 거래가 없어 전세가율을 낼 수 없습니다',
-      detail: `${contract.apartment}은(는) ${contract.rangeLabel} 매매 거래가 없습니다.`
-        + '<br>전세가율은 같은 단지 매매가를 분모로 쓰기 때문에 계산할 수 없습니다.',
+      lines: [
+        `${contract.apartment}은(는) ${contract.rangeLabel} 매매 거래가 없습니다.`,
+        '전세가율은 같은 단지 매매가를 분모로 쓰기 때문에 계산할 수 없습니다.',
+      ],
     };
   }
   return {
     heading: '표본 부족 — 판정 불가',
-    detail: `전용 ${format(contract.area)}㎡ 부근 매매가 ${size}건뿐입니다.`
-      + '<br>3건 미만의 중위가는 믿을 수 없어 전세가율을 표시하지 않습니다.',
+    lines: [
+      `전용 ${format(contract.area)}㎡ 부근 매매가 ${size}건뿐입니다.`,
+      '3건 미만의 중위가는 믿을 수 없어 전세가율을 표시하지 않습니다.',
+    ],
   };
+}
+
+function renderMissingRatio(reason) {
+  const target = $('#ratio-content');
+  target.replaceChildren();
+
+  const state = document.createElement('div');
+  state.className = 'unknown-state';
+
+  const symbol = document.createElement('span');
+  symbol.className = 'unknown-symbol';
+  symbol.setAttribute('aria-hidden', 'true');
+  symbol.textContent = '—';
+
+  const heading = document.createElement('h3');
+  heading.textContent = reason.heading;
+
+  const detail = document.createElement('p');
+  reason.lines.forEach((line, index) => {
+    if (index > 0) detail.append(document.createElement('br'));
+    detail.append(document.createTextNode(line));
+  });
+
+  state.append(symbol, heading, detail);
+
+  const warning = document.createElement('p');
+  warning.className = 'ratio-warning';
+  warning.textContent = '표본을 늘리려고 면적 범위를 넓히거나 가격을 추정하지 않습니다.';
+
+  target.append(state, warning);
 }
 
 function renderResult() {
@@ -334,7 +371,7 @@ function renderResult() {
   $('#contract-summary').textContent = `${contract.sido} ${contract.district === contract.sido ? '' : contract.district} · ${contract.apartment} · 전용 ${format(contract.area)}㎡ · ${contract.rent === 0 ? '전세' : '월세'} · 보증금 ${money(contract.deposit)}${contract.rent > 0 ? ` · 월세 ${money(contract.rent)}` : ''}`;
   // Where the numbers came from, including rows that were removed. A report
   // that quietly drops cancelled deals cannot be checked against the source.
-  const provenance = [`국토교통부 실거래가 · ${contract.rangeLabel}`, `매매 ${format(contract.trades.length)}건`];
+  const provenance = [`국토교통부 실거래가 · ${contract.rangeLabel}`, `매매 ${format(trades.length)}건`];
   if (contract.cancelledCount > 0) provenance.push(`해제 거래 ${format(contract.cancelledCount)}건 제외`);
   $('#data-provenance').textContent = provenance.join(' · ');
 
@@ -343,7 +380,7 @@ function renderResult() {
   $('#ratio-card').dataset.verdict = decision.level;
   if (decision.level === 'unknown') {
     const reason = missingRatioReason(trades, size);
-    $('#ratio-content').innerHTML = `<div class="unknown-state"><span class="unknown-symbol" aria-hidden="true">—</span><h3>${reason.heading}</h3><p>${reason.detail}</p></div><p class="ratio-warning">표본을 늘리려고 면적 범위를 넓히거나 가격을 추정하지 않습니다.</p>`;
+    renderMissingRatio(reason);
     $('#distribution-content').innerHTML = '<div class="unknown-state"><span class="unknown-symbol" aria-hidden="true">—</span><h3>거래 분포를 표시할 수 없습니다</h3><p>표본 3건 이상이 필요합니다.<br>매매가격 통계와 보증금 위치를 표시하지 않습니다.</p></div>';
   } else {
     // Truncate to one decimal so rounding never displays the next verdict boundary.
