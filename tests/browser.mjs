@@ -1,6 +1,6 @@
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { writeFile, readFile } from 'node:fs/promises';
 
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 const results = [];
@@ -340,7 +340,15 @@ try {  for (const width of [360, 390, 768, 1440]) {
   const markup = await page.evaluate(() => fetch('/').then((r) => r.text()));
   assert.ok(!/준비 중/.test(markup), 'a shipped feature is still described as pending');
   assert.ok(!/자리표시자/.test(markup), 'a live section is still described as a placeholder');
-  results.push({ check: 'no pending-feature copy survives for shipped features', result: 'pass' });
+  // The first pass at this check only read the served page, and the same stale
+  // sentence sat in README for another day. The submitted docs are read by the
+  // judges too, so they are held to the same rule.
+  const docs = ['README.md', 'docs/DESIGN.md'];
+  for (const file of docs) {
+    const text = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
+    assert.ok(!/연동 준비 중|자리표시자/.test(text), `${file} still calls a shipped feature pending`);
+  }
+  results.push({ check: 'no pending-feature copy survives, page or docs', result: 'pass', docs });
 
   // The headline card compares the deposit against what other tenants in the
   // same complex paid. It leads the report, so it runs against live data too.
