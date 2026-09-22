@@ -17,12 +17,20 @@ const NORMALIZE = { rent: normalizeRent, trade: normalizeTrade };
 // KNOWN LIMITATION — tracked, not fixed.
 //
 // This takes the first page only. Busy districts return far more than this:
-// Gangnam-gu had 2,096 rent transactions in 202606, of which we keep 200. The
-// rows dropped are the tail of the month rather than a random sample, so the
-// median we compute is biased, and the median is the denominator of the jeonse
-// ratio. Fixing it means reading totalCount and paging, and re-measuring the
-// CPU cost of parsing a full month. Until then the number shown for a busy
-// district is computed from a partial month.
+// Gangnam-gu had 2,096 rent transactions in 202606, of which we keep 200.
+//
+// Measured on the 202606 trade page for 11680: the 200 rows span days 1-30
+// fairly evenly (45/30/30/34/28/33 per five-day bucket) and cover all 14
+// legal dong, so the cut is not the tail of the month. What it does cost is
+// per-complex depth. Those 200 rows spread over 110 complexes, only 19 of
+// which reach the three-sale minimum, so a busy district falls back to
+// '판정 불가' more often than its real transaction count warrants. The
+// browser widens this by querying six months rather than one.
+//
+// Deliberately not fixed: paging on totalCount would multiply the parse cost
+// that the 10ms CPU budget already constrains. Declining to rate a complex is
+// the documented behaviour when a sample is thin, so the truncation costs
+// coverage, not correctness.
 const ROWS_PER_MONTH = '200';
 
 // Bumped whenever the shape or completeness of a cached body changes, so a
