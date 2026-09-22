@@ -1,4 +1,7 @@
-import { jeonseRatio, verdict, tradeDistribution, similarPrices } from './lib/ratio.js';
+import {
+  jeonseRatio, verdict, tradeDistribution, similarPrices,
+  marketRatio, marketVerdict, depositDistribution, similarDeposits,
+} from './lib/ratio.js';
 import { listComplexes, complexTransactions, monthRangeLabel, missingRatioReason } from './lib/aggregate.js';
 import { recentMonths } from './lib/months.js';
 
@@ -311,7 +314,10 @@ function gauge(ratio) {
     <div class="gauge-ticks"><span style="left:0">0</span><span style="left:60%">60</span><span style="left:70%">70</span><span style="left:80%">80</span><span style="left:100%">100%</span></div></div>`;
 }
 
-function renderDistribution(stats, deposit) {
+const SALE_NOTE = '25%·75%는 실제 관측값(nearest-rank)을 사용합니다.<br>내 보증금 마커는 매매가와의 비교이며 전월세 백분위가 아닙니다.';
+const MARKET_NOTE = '25%·75%는 실제 관측값(nearest-rank)을 사용합니다.<br>월세가 있는 계약은 제외했습니다. 전월세 전환율을 가정하지 않습니다.';
+
+function renderDistribution(stats, deposit, note = SALE_NOTE) {
   // Include the deposit in the displayed axis even if outside observed trade range.
   const low = Math.min(stats.min, deposit) * 0.85;
   const high = Math.max(stats.max, deposit) * 1.05;
@@ -342,7 +348,67 @@ function renderDistribution(stats, deposit) {
     ${endLabel(stats.min)}${endLabel(stats.max)}
     </svg>
     <dl class="distribution-stats">${[['최저', stats.min], ['하위25%', stats.q1], ['중위', stats.median], ['상위25%', stats.q3], ['최고', stats.max]].map(([label, price]) => `<div><dt>${label}</dt><dd>${format(price)}</dd></div>`).join('')}</dl>
-    <p class="distribution-note">25%·75%는 실제 관측값(nearest-rank)을 사용합니다.<br>내 보증금 마커는 매매가와의 비교이며 전월세 백분위가 아닙니다.</p>`;
+    <p class="distribution-note">${note}</p>`;
+}
+
+// Why the deposit could not be placed against the local jeonse market. Same
+// discipline as missingRatioReason: 'not enough samples' is wrong when the
+// real answer is that every filing here is a monthly-rent contract.
+function missingMarketReason(contract) {
+  const nearby = similarDeposits(contract.rents, contract.area);
+  const area = `전용 ${format(contract.area)}㎡`;
+  if (!contract.rents.length) {
+    return { heading: '전세 시세를 비교할 수 없습니다', lines: [`이 단지는 ${contract.rangeLabel}에 전월세 거래가 없습니다.`] };
+  }
+  if (!nearby.length) {
+    const jeonseAnywhere = contract.rents.filter((r) => (r?.monthlyRent ?? 0) === 0).length;
+    return {
+      heading: '전세 시세를 비교할 수 없습니다',
+      lines: [jeonseAnywhere
+        ? `전월세 ${format(contract.rents.length)}건이 있지만 ${area} 부근(±10%)에 전세 계약이 없습니다.`
+        : `전월세 ${format(contract.rents.length)}건이 모두 월세 계약입니다.`],
+    };
+  }
+  return {
+    heading: '전세 시세를 비교할 수 없습니다',
+    lines: [`${area} 부근 전세가 ${format(nearby.length)}건뿐입니다.`, '표본 3건 이상이 필요합니다.'],
+  };
+}
+
+function renderMarket() {
+  const card = $('#market-card');
+  const stats = depositDistribution(contract.rents, contract.area);
+  const size = similarDeposits(contract.rents, contract.area).length;
+  $('#market-sample').textContent = size ? `전세 표본 ${size}건` : '';
+
+  if (!stats) {
+    card.dataset.level = 'unknown';
+    const reason = missingMarketReason(contract);
+    const warning = document.createElement('p');
+    warning.className = 'ratio-warning';
+    warning.textContent = '표본을 늘리려고 면적 범위를 넓히거나 월세를 전세로 환산하지 않습니다.';
+    $('#market-content').replaceChildren(unknownState(reason.heading, reason.lines), warning);
+    return;
+  }
+
+  // A monthly-rent deposit is not the same kind of number as a jeonse deposit,
+  // so it gets the distribution to read but no ratio against it.
+  if (contract.rent > 0) {
+    card.dataset.level = 'unknown';
+    $('#market-content').innerHTML = `<p class="market-lead">월세 계약이라 전세 시세 대비 비율은 내지 않습니다.<br>아래는 같은 단지 ${format(contract.area)}㎡ 부근의 전세 실거래 분포입니다.</p>
+      ${renderDistribution(stats, contract.deposit, MARKET_NOTE)}`;
+    return;
+  }
+
+  const result = marketRatio(contract.deposit, contract.rents, contract.area);
+  const decision = marketVerdict(result);
+  const displayRatio = Math.floor(result.ratio * 10) / 10;
+  card.dataset.level = decision.level;
+  $('#market-content').innerHTML = `<div class="ratio-value">${displayRatio.toFixed(1)}<small>%</small></div>
+    <div class="ratio-status"><span class="verdict-pill market-${decision.level}">${decision.label}</span></div>
+    <p class="ratio-calculation">보증금 ${money(contract.deposit)} ÷ 전세 중위가 ${money(result.medianDeposit)}<br>소수점 둘째 자리 이하 버림 · 판정은 원래 계산값 기준</p>
+    ${renderDistribution(stats, contract.deposit, MARKET_NOTE)}
+    <p class="ratio-warning">100% 미만 시세보다 낮음 · 100~110% 미만 시세 수준 · 110% 이상 시세보다 높음<br>같은 단지 최근 전세 실거래와의 비교이며, 보증금 반환의 안전성과는 별개입니다.</p>`;
 }
 
 // Why a ratio could not be produced. The distinction matters: "not enough
@@ -520,7 +586,8 @@ function renderResult() {
   $('#contract-summary').textContent = `${contract.sido} ${contract.district === contract.sido ? '' : contract.district} · ${contract.apartment} · 전용 ${format(contract.area)}㎡ · ${contract.rent === 0 ? '전세' : '월세'} · 보증금 ${money(contract.deposit)}${contract.rent > 0 ? ` · 월세 ${money(contract.rent)}` : ''}`;
   // Where the numbers came from, including rows that were removed. A report
   // that quietly drops cancelled deals cannot be checked against the source.
-  const provenance = [`국토교통부 실거래가 · ${contract.rangeLabel}`, `매매 ${format(trades.length)}건`];
+  const provenance = [`국토교통부 실거래가 · ${contract.rangeLabel}`,
+    `전월세 ${format((contract.rents ?? []).length)}건`, `매매 ${format(trades.length)}건`];
   if (contract.cancelledCount > 0) provenance.push(`해제 거래 ${format(contract.cancelledCount)}건 제외`);
   $('#data-provenance').textContent = provenance.join(' · ');
 
@@ -552,6 +619,8 @@ function renderResult() {
       <p class="ratio-warning">60% 미만 안전 · 60~70% 미만 보통 · 70~80% 미만 주의 · 80% 이상 위험<br>이 비율만으로 보증금 반환의 안전성을 보장하지 않습니다.</p>`;
     $('#distribution-content').innerHTML = renderDistribution(stats, contract.deposit);
   }
+  // The headline card: what other tenants in this complex actually paid.
+  renderMarket();
   $$('.check-item input').forEach((checkbox) => { checkbox.checked = false; });
   updateChecklist();
 

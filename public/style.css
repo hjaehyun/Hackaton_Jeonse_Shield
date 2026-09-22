@@ -31,3 +31,27 @@
 /* The legal rules above are declared after the sheet's main breakpoint, so a
    phone override has to come after them to win on equal specificity. */
 @media(max-width:720px){.legal-topic{padding:17px}.legal-topic h3{font-size:18px}.legal-guidance,.plain-summary{font-size:14px}.precedent blockquote,.precedent blockquote.source-quote{font-size:12.5px}}
+
+/* Report order: the local jeonse market leads, the auction-risk ratio follows,
+   and the sale distribution that fed it collapses under both. Declared after
+   the breakpoint above, so the phone overrides sit at the end of this file. */
+.market-card{margin:23px 0 14px;padding:28px 26px;border-color:#cddbd2;background:linear-gradient(180deg,#fbfdfc,#fff)}
+.market-card .ratio-value{font-size:62px;margin-top:18px}
+.market-card .ratio-value>small{font-size:30px}
+.market-card .box-plot{margin-top:24px}
+.market-lead{font-size:14px;font-weight:600;line-height:1.8;color:var(--ink);margin:18px 0 0;text-align:center}
+.verdict-pill.market-below{background:#eaf7ee;color:var(--safe)}
+.verdict-pill.market-at{background:#f1f4f7;color:#4b5b74}
+.verdict-pill.market-above{background:#fff3df;color:var(--caution)}
+.verdict-pill.market-unknown{background:#f1f2f4;color:var(--unknown)}
+.ratio-card{margin-bottom:14px}
+.distribution-card{margin-bottom:30px;padding:0}
+.distribution-card>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 24px;cursor:pointer;list-style:none}
+.distribution-card>summary::-webkit-details-marker{display:none}
+.distribution-card>summary::after{content:'▾';color:#8a95a2;font-size:12px;margin-left:auto;transition:transform .15s}
+.distribution-card[open]>summary::after{transform:rotate(180deg)}
+.distribution-card>summary:hover{background:#fafbfc}
+.summary-heading{font-size:15px;font-weight:700;letter-spacing:-.4px;color:var(--navy)}
+.distribution-card>.report-description,.distribution-card>#distribution-content{padding:0 24px}
+.distribution-card>#distribution-content{padding-bottom:22px}
+@media(max-width:720px){.market-card{padding:22px 19px;margin-top:17px}.market-card .ratio-value{font-size:50px}.market-card .ratio-value>small{font-size:25px}.market-lead{font-size:13px}.distribution-card>summary{padding:17px 19px}.summary-heading{font-size:14px}.distribution-card>.report-description,.distribution-card>#distribution-content{padding-inline:19px}}

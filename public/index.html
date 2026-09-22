@@ -92,10 +92,9 @@
       <aside class="mock-notice"><span class="info-icon" aria-hidden="true">i</span><p><strong>실거래가 기반 참고 정보입니다.</strong><br>권리관계·선순위 담보·임대인 상태는 포함되지 않습니다. 계약 판단은 등기부등본 확인과 전문가 상담을 거쳐 주세요.</p></aside>
       <p id="data-provenance" class="data-provenance"></p>
         <p id="monthly-rent-note" class="monthly-rent-note" hidden>월세 계약은 보증금 비율만 표시합니다. 월세 환산, 총 주거비 및 월세 적정성은 이번 진단에 포함되지 않습니다.</p>
-      <div class="report-top-grid">
-        <article class="report-card ratio-card" id="ratio-card" aria-labelledby="ratio-title"><div class="card-title-row"><h2 id="ratio-title">보증금의 시세 대비 비율</h2></div><p class="report-description">동일 단지 유사 면적의 매매 중위가 기준</p><div id="ratio-content"></div></article>
-        <article class="report-card distribution-card" aria-labelledby="distribution-title"><div class="card-title-row"><h2 id="distribution-title">유사 면적 매매 거래 분포</h2><span id="sample-count" class="sample-label"></span></div><p class="report-description">동일 단지 · 전용면적 ±10% · 가격 단위: 만원</p><div id="distribution-content"></div></article>
-      </div>
+      <article class="report-card market-card" id="market-card" aria-labelledby="market-title"><div class="card-title-row"><h2 id="market-title">같은 단지 전세 시세와 비교</h2><span id="market-sample" class="sample-label"></span></div><p class="report-description">동일 단지 · 전용면적 ±10% · 월세 없는 전세 계약만 · 가격 단위: 만원</p><div id="market-content"></div></article>
+      <article class="report-card ratio-card" id="ratio-card" aria-labelledby="ratio-title"><div class="card-title-row"><h2 id="ratio-title">보증금 반환 위험 — 전세가율</h2></div><p class="report-description">집이 경매로 넘어갔을 때를 가정한 지표입니다. 동일 단지 유사 면적의 매매 중위가 기준</p><div id="ratio-content"></div></article>
+      <details class="report-card distribution-card"><summary><span class="summary-heading">유사 면적 매매 거래 분포</span><span id="sample-count" class="sample-label"></span></summary><p class="report-description">전세가율의 분모가 된 매매 거래입니다. 동일 단지 · 전용면적 ±10% · 가격 단위: 만원</p><div id="distribution-content"></div></details>
       <section class="report-card checklist-card" aria-labelledby="checklist-title"><div class="card-title-row"><div><span class="eyebrow muted">BEFORE YOU SIGN</span><h2 id="checklist-title">계약 전, 꼭 확인하세요</h2></div><span id="checklist-count" class="checklist-count" aria-live="polite">0 / 5 확인</span></div><p class="report-description">비율이 낮아도 권리관계에 따라 위험할 수 있습니다. 체크 상태는 저장되지 않습니다.</p><div class="checklist-grid">
         <label class="check-item"><input type="checkbox"><span><strong>등기부등본 확인</strong><small>소유자와 권리관계 확인</small></span></label>
         <label class="check-item"><input type="checkbox"><span><strong>확정일자</strong><small>임대차계약서 확정일자 확인</small></span></label>

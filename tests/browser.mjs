@@ -131,7 +131,8 @@ try {  for (const width of [360, 390, 768, 1440]) {
     if ([360, 1440].includes(width)) await capture(page, `wizard-${width}`);
     await clickNext(page);
     await page.locator('#result-screen').waitFor({ state: 'visible' });
-    assert.match(await page.locator('.ratio-value').innerText(), /58\.3/);
+    // Two cards carry a .ratio-value now; this one is the auction-risk ratio.
+    assert.match(await page.locator('#ratio-content .ratio-value').innerText(), /58\.3/);
     assert.equal(await page.locator('#ratio-card').getAttribute('data-verdict'), 'safe');
     assert.equal(await page.locator('#sample-count').innerText(), '표본 12건');
     // The last gauge tick sits at left:100%, where the available width is 0.
@@ -148,10 +149,10 @@ try {  for (const width of [360, 390, 768, 1440]) {
 
     // Every number printed on the chart must be an observed value. Padded axis
     // bounds look like data and contradict the statistics table below them.
-    const chartNumbers = await page.locator('.box-plot text').evaluateAll(
+    const chartNumbers = await page.locator('#distribution-content .box-plot text').evaluateAll(
       (els) => els.map((el) => el.textContent.trim()).filter((t) => /\d/.test(t)),
     );
-    const tableNumbers = await page.locator('.distribution-stats dd').evaluateAll(
+    const tableNumbers = await page.locator('#distribution-content .distribution-stats dd').evaluateAll(
       (els) => els.map((el) => el.textContent.trim()),
     );
     const depositLabel = await page.locator('#deposit-input').inputValue();
@@ -341,6 +342,40 @@ try {  for (const width of [360, 390, 768, 1440]) {
   assert.ok(!/자리표시자/.test(markup), 'a live section is still described as a placeholder');
   results.push({ check: 'no pending-feature copy survives for shipped features', result: 'pass' });
 
+  // The headline card compares the deposit against what other tenants in the
+  // same complex paid. It leads the report, so it runs against live data too.
+  const cardOrder = await page.locator('#result-screen .report-card').evaluateAll(
+    (els) => els.map((el) => el.id || el.className),
+  );
+  assert.ok(cardOrder[0].includes('market-card'), `the market card does not lead: ${cardOrder}`);
+  assert.ok(cardOrder[1].includes('ratio-card'), `the jeonse ratio is not second: ${cardOrder}`);
+  assert.equal(await page.locator('.distribution-card').evaluate((el) => el.open), false,
+    'the sale distribution is not collapsed');
+  const marketSample = await page.locator('#market-sample').innerText();
+  const marketText = await page.locator('#market-content').innerText();
+  assert.match(marketSample, /전세 표본 \d+건/);
+  assert.match(marketText, /전세 중위가/);
+  assert.match(await page.locator('#data-provenance').innerText(), /전월세 \d+건/);
+  results.push({ check: 'the market card leads the live report', result: 'pass', marketSample });
+
+  // Every number on the market chart must be an observed deposit, same rule
+  // the sale chart already follows.
+  const marketChart = await page.locator('#market-content .box-plot text').evaluateAll(
+    (els) => els.map((el) => el.textContent.trim()).filter((t) => /\d/.test(t)),
+  );
+  const marketTable = await page.locator('#market-content .distribution-stats dd').evaluateAll(
+    (els) => els.map((el) => el.textContent.trim()),
+  );
+  // SVG <text> has no innerText, so read textContent the way the sale chart does.
+  const depositShown = await page.locator('#market-content .deposit-text').evaluateAll(
+    (els) => els.map((el) => el.textContent.trim()).filter((t) => /\d/.test(t)),
+  );
+  for (const printed of marketChart) {
+    assert.ok(marketTable.includes(printed) || depositShown.some((d) => d.startsWith(printed)),
+      `the market chart printed ${printed}, which is not an observed deposit: ${marketTable}`);
+  }
+  results.push({ check: 'market chart prints only observed deposits', result: 'pass', marketTable });
+
   // A missing ratio has to say which kind of missing it is. 'not enough
   // samples' reads like a bug when the real reason is that the complex simply
   // has no sales.
@@ -399,6 +434,10 @@ try {  for (const width of [360, 390, 768, 1440]) {
   const wrongSize = await reportWith([50000, 60000, 70000, 80000], '120');
   assert.doesNotMatch(wrongSize, /0건뿐/, `a contradictory count reached the screen: ${wrongSize}`);
   assert.match(wrongSize, /4건/, 'it should say the complex does sell');
+  // The sale distribution collapsed under the market card, so a reader has to
+  // open it before the two cards can contradict each other. Open it the way
+  // they would rather than reading hidden text.
+  await page.locator('.distribution-card > summary').click();
   const wrongSizeDistribution = await page.locator('#distribution-content').innerText();
   assert.match(wrongSizeDistribution, /부근 거래가 없어/, `the two cards disagree: ${wrongSizeDistribution}`);
   results.push({ check: 'sales at another size are not reported as zero sales', result: 'pass' });
