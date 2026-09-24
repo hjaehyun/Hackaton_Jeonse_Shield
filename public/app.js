@@ -1,6 +1,8 @@
 import {
-  jeonseRatio, verdict, tradeDistribution, similarPrices,
+  jeonseRatio, verdict, similarPrices,
   marketRatio, marketVerdict, depositDistribution, similarDeposits,
+  wolseRatio, wolseDistribution, wolseTransactions, DEPOSIT_BAND,
+  jeonseTransactions, recentFilings,
 } from './lib/ratio.js';
 import { listComplexes, complexTransactions, monthRangeLabel, missingRatioReason } from './lib/aggregate.js';
 import { recentMonths } from './lib/months.js';
@@ -233,6 +235,20 @@ function renderComplexes(filter) {
   $('#complex-empty').hidden = shown.length > 0 || complexes.length === 0;
 }
 
+const contractType = () => ($('input[name="contractType"]:checked')?.value ?? 'jeonse');
+
+// The rent field only exists for a contract that has rent. Hiding it also
+// clears it, so switching 월세 -> 전세 cannot leave a stale amount behind that
+// the report would then describe as a monthly contract.
+function syncContractType() {
+  const wolse = contractType() === 'wolse';
+  $('#rent-field').hidden = !wolse;
+  $('#rent-input').required = wolse;
+  if (!wolse) $('#rent-input').value = '0';
+  else if ($('#rent-input').value === '0') $('#rent-input').value = '';
+  clearError();
+}
+
 function validate(number) {
   clearError();
   if (number === 1) {
@@ -243,13 +259,16 @@ function validate(number) {
   }
   if (number === 2 && !selectedComplex) return fail('#complex-filter', '목록에서 단지를 선택해 주세요.');
   if (number === 3) {
-    for (const [selector, label, minimum, integer] of [
-      ['#area-input', '전용면적', 0.01, false], ['#deposit-input', '보증금', 1, true], ['#rent-input', '월세', 0, true],
-    ]) {
+    // 월세 is only asked for, and only checked, when the contract is one.
+    // Requiring a rent of 0 from a 전세 tenant was a rule they had to be told;
+    // picking 전세 says the same thing without the instruction.
+    const fields = [['#area-input', '전용면적', 0.01, false], ['#deposit-input', '보증금', 1, true]];
+    if (contractType() === 'wolse') fields.push(['#rent-input', '월세', 1, true]);
+    for (const [selector, label, minimum, integer] of fields) {
       const field = $(selector);
       const value = Number(field.value);
       if (!field.value.trim() || !Number.isFinite(value) || value < minimum || value > Number.MAX_SAFE_INTEGER || (integer && !Number.isSafeInteger(value)) || !field.validity.valid) {
-        return fail(selector, `${label}${label === '보증금' ? '은' : '는'} ${minimum === 0 ? '0 이상' : '0보다 큰'} ${integer ? '정수' : '숫자(소수점 둘째 자리까지)'}로 입력해 주세요.`);
+        return fail(selector, `${label}${label === '보증금' ? '은' : '는'} 0보다 큰 ${integer ? '정수' : '숫자(소수점 둘째 자리까지)'}로 입력해 주세요.`);
       }
     }
   }
@@ -273,7 +292,8 @@ $('#diagnosis-form').addEventListener('submit', (event) => {
     sido: group.sido, district: district.name, lawdCd: district.code,
     apartment: picked.name ?? selectedComplex.name, complexKey: selectedComplex.key,
     area: Number($('#area-input').value),
-    deposit: Number($('#deposit-input').value), rent: Number($('#rent-input').value),
+    deposit: Number($('#deposit-input').value),
+    rent: contractType() === 'wolse' ? Number($('#rent-input').value) : 0,
     trades: picked.trades, rents: picked.rents,
     cancelledCount: picked.cancelledCount,
     rangeLabel: monthRangeLabel(monthlyRows.months),
@@ -284,6 +304,7 @@ $('#diagnosis-form').addEventListener('input', (event) => {
   if (event.target.matches('input') && event.target.getAttribute('aria-invalid') === 'true') clearError();
 });
 $('#previous-step').addEventListener('click', () => showStep(Math.max(1, step - 1)));
+$$('input[name="contractType"]').forEach((radio) => radio.addEventListener('change', syncContractType));
 $('#sido-select').addEventListener('change', () => {
   const group = regions.find((entry) => entry.sido === $('#sido-select').value);
   const select = $('#district-select');
@@ -303,6 +324,8 @@ $('#new-diagnosis').addEventListener('click', () => {
   contract = null;
   step = 1;
   $('#diagnosis-form').reset();
+  // form.reset() restores the checked radio but not the field it governs.
+  syncContractType();
   monthlyRows = null;
   $('#sido-select').dispatchEvent(new Event('change'));
 });
@@ -352,6 +375,261 @@ function renderDistribution(stats, deposit, note = SALE_NOTE) {
 }
 
 // Why the deposit could not be placed against the local jeonse market. Same
+// The filings behind the median, newest first. A median is a summary and a
+// reader is entitled to the rows it summarises; this is also the only place
+// the report shows an individual contract rather than a statistic.
+//
+// Built from nodes rather than markup. Nothing here is ministry-supplied text
+// today, but the moment someone adds a 동 or 단지명 column it would be, and a
+// table that was already string-built is where that goes wrong.
+// Open by default. Collapsed, it was not found: the first reader to test this
+// asked for the feature it already shipped, because the chart above it looks
+// like the answer and a disclosure looks like a footnote. What people want
+// from a comparison is the amounts, so the amounts are not behind a click.
+function renderFilings(rows, myAmount, kind = 'jeonse') {
+  const wolse = kind === 'wolse';
+  const wrap = document.createElement('details');
+  wrap.className = 'filing-list';
+  wrap.open = true;
+
+  const summary = document.createElement('summary');
+  const label = document.createElement('span');
+  label.className = 'summary-heading';
+  label.textContent = `실제 거래된 금액 ${format(rows.length)}건`;
+  const hint = document.createElement('span');
+  hint.className = 'filing-hint';
+  hint.textContent = '최신순 · 중위가를 낸 거래 전부';
+  summary.append(label, hint);
+
+  const scroll = document.createElement('div');
+  scroll.className = 'filing-scroll';
+  const table = document.createElement('table');
+  table.className = 'filing-table';
+
+  const head = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  const headings = wolse
+    ? [['계약일', 'left'], ['전용', 'right'], ['층', 'right'], ['보증금', 'right'], ['월세', 'right']]
+    : [['계약일', 'left'], ['전용', 'right'], ['층', 'right'], ['보증금', 'right']];
+  for (const [text, align] of headings) {
+    const th = document.createElement('th');
+    th.textContent = text;
+    th.style.textAlign = align;
+    headRow.append(th);
+  }
+  head.append(headRow);
+
+  const body = document.createElement('tbody');
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+    const dated = row.year && row.month
+      ? `${row.year}.${String(row.month).padStart(2, '0')}${row.day ? `.${String(row.day).padStart(2, '0')}` : ''}`
+      : '날짜 없음';
+    const cells = [
+      dated,
+      `${format(row.area)}㎡`,
+      Number.isFinite(row.floor) ? `${format(row.floor)}층` : '—',
+    ];
+    // The deposit each rent bought sits next to it: without it the rents look
+    // like a spread when they are a curve.
+    if (wolse) cells.push(format(row.deposit));
+    for (const [i, text] of cells.entries()) {
+      const td = document.createElement('td');
+      td.textContent = text;
+      if (i > 0) td.className = 'num';
+      tr.append(td);
+    }
+
+    const money = document.createElement('td');
+    money.className = 'num filing-deposit';
+    const amount = document.createElement('strong');
+    amount.textContent = format(wolse ? row.monthlyRent : row.deposit);
+    money.append(amount);
+    // The difference is the reason this table is on a comparison card.
+    if (Number.isFinite(myAmount) && myAmount > 0) {
+      // 월세 ends in a vowel and 보증금 in a consonant, so the particle differs.
+      const [mine, same] = wolse ? ['내 월세', '내 월세와 같음'] : ['내 보증금', '내 보증금과 같음'];
+      const gap = (wolse ? row.monthlyRent : row.deposit) - myAmount;
+      const diff = document.createElement('small');
+      diff.className = gap > 0 ? 'over' : gap < 0 ? 'under' : 'same';
+      diff.textContent = gap === 0 ? same
+        : `${mine}보다 ${format(Math.abs(gap))} ${gap > 0 ? '높음' : '낮음'}`;
+      money.append(diff);
+    }
+    tr.append(money);
+    body.append(tr);
+  }
+
+  table.append(head, body);
+  scroll.append(table);
+  wrap.append(summary, scroll);
+  return wrap;
+}
+
+// --- 이 단지 최근 실거래 (three kinds side by side) ---
+//
+// This replaced the sale box plot. A chart of prices a reader cannot name is
+// weaker than six dated rows they can, and the same complex trades in three
+// forms that a single distribution cannot hold at once.
+
+const FILING_DATE = (row) => (row.year && row.month
+  ? `${row.year}.${String(row.month).padStart(2, '0')}${row.day ? `.${String(row.day).padStart(2, '0')}` : ''}`
+  : '날짜 없음');
+
+const AREA_CELL = (row) => `${format(row.area)}㎡`;
+const FLOOR_CELL = (row) => (Number.isFinite(row.floor) ? `${format(row.floor)}층` : '—');
+
+// How many filings the popup lists. The tile says how many exist, so a capped
+// list never reads as the complete history of the complex.
+const DIALOG_LIMIT = 20;
+
+const FILING_KINDS = {
+  jeonse: {
+    label: '전세',
+    amount: (r) => format(r.deposit),
+    columns: [['계약일', FILING_DATE], ['전용', AREA_CELL], ['층', FLOOR_CELL],
+      ['보증금', (r) => format(r.deposit), true]],
+  },
+  wolse: {
+    label: '월세',
+    amount: (r) => `${format(r.deposit)} / ${format(r.monthlyRent)}`,
+    columns: [['계약일', FILING_DATE], ['전용', AREA_CELL], ['층', FLOOR_CELL],
+      ['보증금', (r) => format(r.deposit)], ['월세', (r) => format(r.monthlyRent), true]],
+  },
+  sales: {
+    label: '매매',
+    amount: (r) => format(r.price),
+    columns: [['계약일', FILING_DATE], ['전용', AREA_CELL], ['층', FLOOR_CELL],
+      ['거래가', (r) => format(r.price), true]],
+  },
+};
+
+function filingTable(rows, columns) {
+  const table = document.createElement('table');
+  table.className = 'filing-table recent-table';
+
+  const head = document.createElement('tr');
+  for (const [label] of columns) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    head.append(th);
+  }
+  const thead = document.createElement('thead');
+  thead.append(head);
+
+  const body = document.createElement('tbody');
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+    for (const [, value, strong] of columns) {
+      const td = document.createElement('td');
+      td.className = 'num';
+      const text = value(row);
+      if (strong) {
+        const b = document.createElement('strong');
+        b.textContent = text;
+        td.append(b);
+      } else {
+        td.textContent = text;
+      }
+      tr.append(td);
+    }
+    tr.firstChild.className = '';
+    body.append(tr);
+  }
+
+  table.append(thead, body);
+  return table;
+}
+
+function openFilings(kind) {
+  const spec = FILING_KINDS[kind];
+  const recent = recentFilings(contract.trades, contract.rents, DIALOG_LIMIT);
+  const rows = recent[kind];
+  const total = recent.totals[kind];
+
+  $('#filing-dialog-title').textContent = `${contract.apartment} · ${spec.label}`;
+  $('#filing-dialog-sub').textContent = total > rows.length
+    ? `${contract.rangeLabel} · 최근 ${format(rows.length)}건 · 전체 ${format(total)}건 · 가격 단위: 만원`
+    : `${contract.rangeLabel} · ${format(total)}건 · 가격 단위: 만원`;
+
+  const scroll = document.createElement('div');
+  scroll.className = 'filing-scroll';
+  scroll.append(filingTable(rows, spec.columns));
+  $('#filing-dialog-body').replaceChildren(scroll);
+
+  // A withdrawn sale is not a price anything traded at, so it is counted here
+  // rather than listed with the prices that stood.
+  const withdrawn = kind === 'sales' ? contract.cancelledCount ?? 0 : 0;
+  if (withdrawn > 0) {
+    const note = document.createElement('p');
+    note.className = 'distribution-note';
+    note.textContent = `해제된 매매 ${format(withdrawn)}건은 목록에서 제외했습니다.`;
+    $('#filing-dialog-body').append(note);
+  }
+
+  $('#filing-dialog').showModal();
+}
+
+function recentTile(kind, rows, total) {
+  const spec = FILING_KINDS[kind];
+  const tile = document.createElement('button');
+  tile.type = 'button';
+  tile.className = 'recent-tile';
+  tile.dataset.kind = kind;
+
+  const label = document.createElement('span');
+  label.className = 'recent-tile-label';
+  label.textContent = spec.label;
+
+  const count = document.createElement('span');
+  count.className = 'recent-count';
+  count.textContent = `${format(total)}건`;
+
+  const head = document.createElement('span');
+  head.className = 'recent-group-head';
+  head.append(label, count);
+  tile.append(head);
+
+  if (!rows.length) {
+    const empty = document.createElement('span');
+    empty.className = 'recent-empty';
+    empty.textContent = '신고된 거래 없음';
+    tile.append(empty);
+    tile.disabled = true;
+    tile.setAttribute('aria-label', `${spec.label} 거래 없음`);
+    return tile;
+  }
+
+  // The newest filing on the face of the tile: enough to be worth opening, and
+  // a number the popup will repeat rather than contradict.
+  const latest = rows[0];
+  const when = document.createElement('span');
+  when.className = 'recent-tile-when';
+  when.textContent = `최근 ${FILING_DATE(latest)} · ${AREA_CELL(latest)}`;
+  const amount = document.createElement('strong');
+  amount.className = 'recent-tile-amount';
+  amount.textContent = spec.amount(latest);
+  const more = document.createElement('span');
+  more.className = 'recent-tile-more';
+  more.textContent = '거래 내역 보기';
+
+  tile.append(amount, when, more);
+  tile.setAttribute('aria-label', `${spec.label} ${format(total)}건 거래 내역 보기`);
+  tile.addEventListener('click', () => openFilings(kind));
+  return tile;
+}
+
+function renderRecent() {
+  const recent = recentFilings(contract.trades, contract.rents, DIALOG_LIMIT);
+  const total = recent.totals.jeonse + recent.totals.wolse + recent.totals.sales;
+  $('#recent-sample').textContent = total ? `전체 ${format(total)}건` : '';
+  $('#recent-content').replaceChildren(
+    recentTile('jeonse', recent.jeonse, recent.totals.jeonse),
+    recentTile('wolse', recent.wolse, recent.totals.wolse),
+    recentTile('sales', recent.sales, recent.totals.sales),
+  );
+}
+
 // discipline as missingRatioReason: 'not enough samples' is wrong when the
 // real answer is that every filing here is a monthly-rent contract.
 function missingMarketReason(contract) {
@@ -375,11 +653,89 @@ function missingMarketReason(contract) {
   };
 }
 
-function renderMarket() {
+// Why a rent could not be placed against comparable ones. The deposit band is
+// the part a reader will not guess, so every branch names it.
+function missingWolseReason(contract) {
+  const area = `전용 ${format(contract.area)}㎡`;
+  const band = `보증금 ${money(Math.round(contract.deposit * (1 - DEPOSIT_BAND)))}~${money(Math.round(contract.deposit * (1 + DEPOSIT_BAND)))}`;
+  const nearArea = contract.rents.filter((r) => r && Number.isFinite(r.area)
+    && Math.abs(r.area - contract.area) <= contract.area * 0.1 && (r.monthlyRent ?? 0) > 0);
+  const nearby = wolseTransactions(contract.rents, contract.area, contract.deposit);
+  const heading = '월세 시세를 비교할 수 없습니다';
+  if (!contract.rents.length) {
+    return { heading, lines: [`이 단지는 ${contract.rangeLabel}에 전월세 거래가 없습니다.`] };
+  }
+  if (!nearArea.length) {
+    return { heading, lines: [`전월세 ${format(contract.rents.length)}건이 있지만 ${area} 부근(±10%)에 월세 계약이 없습니다.`] };
+  }
+  if (!nearby.length) {
+    return {
+      heading,
+      lines: [`${area} 부근 월세는 ${format(nearArea.length)}건 있지만, ${band} 구간의 계약이 없습니다.`,
+        '보증금이 다르면 월세도 달라지므로 서로 비교하지 않습니다.'],
+    };
+  }
+  return {
+    heading,
+    lines: [`${band} 구간의 월세 계약이 ${format(nearby.length)}건뿐입니다.`, '표본 3건 이상이 필요합니다.'],
+  };
+}
+
+// A monthly contract is two numbers that trade against each other, so it gets
+// its own comparison: the rent, measured only against rents that bought a
+// comparable deposit. Converting either number into the other is the one thing
+// this report will not do.
+function renderWolseMarket() {
   const card = $('#market-card');
+  $('#market-title').textContent = '같은 단지 월세 시세와 비교';
+  $('#market-card .report-description').textContent =
+    `동일 단지 · 전용면적 ±10% · 보증금이 내 계약과 ±${Math.round(DEPOSIT_BAND * 100)}% 이내인 월세 계약만 · 가격 단위: 만원`;
+
+  const stats = wolseDistribution(contract.rents, contract.area, contract.deposit);
+  const filings = wolseTransactions(contract.rents, contract.area, contract.deposit);
+  $('#market-sample').textContent = filings.length ? `월세 표본 ${filings.length}건` : '';
+  // The per-row difference is meaningful here in a way it never was on the
+  // jeonse card for a monthly contract: every row bought a deposit within
+  // ±20% of mine, so their rents and my rent are the same kind of number.
+  const listing = filings.length ? renderFilings(filings, contract.rent, 'wolse') : null;
+
+  if (!stats) {
+    card.dataset.level = 'unknown';
+    const reason = missingWolseReason(contract);
+    const warning = document.createElement('p');
+    warning.className = 'ratio-warning';
+    warning.textContent = '표본을 늘리려고 면적이나 보증금 범위를 넓히지 않습니다.';
+    $('#market-content').replaceChildren(
+      unknownState(reason.heading, reason.lines), ...(listing ? [listing] : []), warning,
+    );
+    return;
+  }
+
+  const result = wolseRatio(contract.rent, contract.rents, contract.area, contract.deposit);
+  const decision = marketVerdict(result);
+  const displayRatio = Math.floor(result.ratio * 10) / 10;
+  card.dataset.level = decision.level;
+  $('#market-content').innerHTML = `<div class="ratio-value">${displayRatio.toFixed(1)}<small>%</small></div>
+    <div class="ratio-status"><span class="verdict-pill market-${decision.level}">${decision.label}</span></div>
+    <p class="ratio-calculation">월세 ${money(contract.rent)} ÷ 월세 중위가 ${money(result.medianRent)}<br>보증금 ${money(Math.round(result.depositLow))}~${money(Math.round(result.depositHigh))} 구간의 ${format(result.sampleSize)}건 기준 · 소수점 둘째 자리 이하 버림</p>
+    <p class="ratio-warning">100% 미만 시세보다 낮음 · 100~110% 미만 시세 수준 · 110% 이상 시세보다 높음<br>보증금과 월세는 서로 맞바꿀 수 있어, 보증금이 비슷한 계약끼리만 비교합니다. 보증금 반환의 안전성과는 별개입니다.</p>`;
+  $('#market-content').querySelector('.ratio-warning').before(listing);
+}
+
+function renderMarket() {
+  if (contract.rent > 0) { renderWolseMarket(); return; }
+
+  const card = $('#market-card');
+  $('#market-title').textContent = '같은 단지 전세 시세와 비교';
+  $('#market-card .report-description').textContent =
+    '동일 단지 · 전용면적 ±10% · 월세 없는 전세 계약만 · 가격 단위: 만원';
   const stats = depositDistribution(contract.rents, contract.area);
-  const size = similarDeposits(contract.rents, contract.area).length;
+  const filings = jeonseTransactions(contract.rents, contract.area);
+  const size = filings.length;
   $('#market-sample').textContent = size ? `전세 표본 ${size}건` : '';
+  // The list goes out even when no ratio does. 'only 2 nearby' is a claim the
+  // reader can check, and two rows is exactly the size that invites checking.
+  const listing = size ? renderFilings(filings, contract.deposit) : null;
 
   if (!stats) {
     card.dataset.level = 'unknown';
@@ -387,16 +743,9 @@ function renderMarket() {
     const warning = document.createElement('p');
     warning.className = 'ratio-warning';
     warning.textContent = '표본을 늘리려고 면적 범위를 넓히거나 월세를 전세로 환산하지 않습니다.';
-    $('#market-content').replaceChildren(unknownState(reason.heading, reason.lines), warning);
-    return;
-  }
-
-  // A monthly-rent deposit is not the same kind of number as a jeonse deposit,
-  // so it gets the distribution to read but no ratio against it.
-  if (contract.rent > 0) {
-    card.dataset.level = 'unknown';
-    $('#market-content').innerHTML = `<p class="market-lead">월세 계약이라 전세 시세 대비 비율은 내지 않습니다.<br>아래는 같은 단지 ${format(contract.area)}㎡ 부근의 전세 실거래 분포입니다.</p>
-      ${renderDistribution(stats, contract.deposit, MARKET_NOTE)}`;
+    $('#market-content').replaceChildren(
+      unknownState(reason.heading, reason.lines), ...(listing ? [listing] : []), warning,
+    );
     return;
   }
 
@@ -409,6 +758,9 @@ function renderMarket() {
     <p class="ratio-calculation">보증금 ${money(contract.deposit)} ÷ 전세 중위가 ${money(result.medianDeposit)}<br>소수점 둘째 자리 이하 버림 · 판정은 원래 계산값 기준</p>
     ${renderDistribution(stats, contract.deposit, MARKET_NOTE)}
     <p class="ratio-warning">100% 미만 시세보다 낮음 · 100~110% 미만 시세 수준 · 110% 이상 시세보다 높음<br>같은 단지 최근 전세 실거래와의 비교이며, 보증금 반환의 안전성과는 별개입니다.</p>`;
+  // Amounts first, chart second. The chart summarises these rows, so it reads
+  // as the aside and they read as the answer.
+  $('#market-content').querySelector('.box-plot').before(listing);
 }
 
 // Why a ratio could not be produced. The distinction matters: "not enough
@@ -581,7 +933,6 @@ function renderResult() {
   const result = jeonseRatio(contract.deposit, trades, contract.area);
   const decision = verdict(result);
   const size = similarPrices(trades, contract.area).length;
-  const stats = tradeDistribution(trades, contract.area);
   // Ministry-supplied text is never inserted as HTML.
   $('#contract-summary').textContent = `${contract.sido} ${contract.district === contract.sido ? '' : contract.district} · ${contract.apartment} · 전용 ${format(contract.area)}㎡ · ${contract.rent === 0 ? '전세' : '월세'} · 보증금 ${money(contract.deposit)}${contract.rent > 0 ? ` · 월세 ${money(contract.rent)}` : ''}`;
   // Where the numbers came from, including rows that were removed. A report
@@ -592,35 +943,26 @@ function renderResult() {
   $('#data-provenance').textContent = provenance.join(' · ');
 
   $('#monthly-rent-note').hidden = contract.rent === 0;
-  $('#sample-count').textContent = `표본 ${size}건`;
   $('#ratio-card').dataset.verdict = decision.level;
   if (decision.level === 'unknown') {
-    const reason = missingRatioReason({
+    renderMissingRatio(missingRatioReason({
       name: contract.apartment,
       rangeLabel: contract.rangeLabel,
       area: contract.area,
       tradeCount: trades.length,
       sampleSize: size,
-    });
-    renderMissingRatio(reason);
-    // Same reason as the ratio card. Two cards explaining one blank report
-    // differently is how a reader concludes the page is broken.
-    $('#distribution-content').replaceChildren(unknownState(
-      '거래 분포를 표시할 수 없습니다',
-      reason.kind === 'no-sales' ? ['매매 거래가 없어 분포를 그릴 수 없습니다.']
-        : reason.kind === 'no-comparable' ? [`전용 ${format(contract.area)}㎡ 부근 거래가 없어 분포를 그릴 수 없습니다.`]
-        : ['표본 3건 이상이 필요합니다.', '매매가격 통계와 보증금 위치를 표시하지 않습니다.'],
-    ));
+    }));
   } else {
     // Truncate to one decimal so rounding never displays the next verdict boundary.
     const displayRatio = Math.floor(result.ratio * 10) / 10;
     $('#ratio-content').innerHTML = `<div class="ratio-value">${displayRatio.toFixed(1)}<small>%</small></div><div class="ratio-status"><span class="verdict-pill ${decision.level}">${decision.label}</span></div>${gauge(result.ratio)}
-      <p class="ratio-calculation">보증금 ${money(contract.deposit)} ÷ 매매 중위가 ${money(result.medianPrice)}<br>소수점 둘째 자리 이하 버림 · 판정은 원래 계산값 기준${result.ratio > 100 ? ' · 게이지 상한 초과' : ''}</p>
+      <p class="ratio-calculation">보증금 ${money(contract.deposit)} ÷ 매매 중위가 ${money(result.medianPrice)} · 매매 표본 ${format(size)}건<br>소수점 둘째 자리 이하 버림 · 판정은 원래 계산값 기준${result.ratio > 100 ? ' · 게이지 상한 초과' : ''}</p>
       <p class="ratio-warning">60% 미만 안전 · 60~70% 미만 보통 · 70~80% 미만 주의 · 80% 이상 위험<br>이 비율만으로 보증금 반환의 안전성을 보장하지 않습니다.</p>`;
-    $('#distribution-content').innerHTML = renderDistribution(stats, contract.deposit);
   }
   // The headline card: what other tenants in this complex actually paid.
   renderMarket();
+  // What the complex has been trading at lately, in all three forms.
+  renderRecent();
   $$('.check-item input').forEach((checkbox) => { checkbox.checked = false; });
   updateChecklist();
 
@@ -633,6 +975,16 @@ function updateChecklist() {
   $('#checklist-count').textContent = `${$$('.check-item input:checked').length} / 5 확인`;
 }
 $$('.check-item input').forEach((checkbox) => checkbox.addEventListener('change', updateChecklist));
+
+$('#filing-dialog-close').addEventListener('click', () => $('#filing-dialog').close());
+// Clicking the backdrop lands on the dialog itself: anything inside stops at a
+// child. Native ESC-to-close comes free with showModal().
+$('#filing-dialog').addEventListener('click', (event) => {
+  if (event.target === $('#filing-dialog')) $('#filing-dialog').close();
+});
+// Leaving the report while a filing list is open would otherwise strand the
+// modal over the landing page.
+window.addEventListener('hashchange', () => $('#filing-dialog').close());
 
 async function loadRegions() {
   try {
@@ -653,4 +1005,7 @@ new ResizeObserver((entries) => {
 }).observe($('#site-footer'));
 window.addEventListener('hashchange', route);
 loadRegions();
+// A browser that restored a checked radio on reload must not leave the rent
+// field out of step with it.
+syncContractType();
 route();

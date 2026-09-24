@@ -42,9 +42,17 @@ async function fillToReport(page, area, deposit = '35000', rent = '0') {
   await clickNext(page);
   await page.fill('#area-input', area);
   await page.fill('#deposit-input', deposit);
-  await page.fill('#rent-input', rent);
+  await setContractType(page, rent);
   await clickNext(page);
   await page.locator('#result-screen').waitFor({ state: 'visible' });
+}
+
+// The form asks which kind of contract it is rather than reading 0 rent as
+// 전세, so a rent has to arrive through the radio that reveals its field.
+async function setContractType(page, rent) {
+  const wolse = Number(rent) > 0;
+  await page.check(`input[name="contractType"][value="${wolse ? 'wolse' : 'jeonse'}"]`);
+  if (wolse) await page.fill('#rent-input', String(rent));
 }
 
 // The layout and verdict checks need a fixed distribution, so the width loop
@@ -123,10 +131,28 @@ try {  for (const width of [360, 390, 768, 1440]) {
     await clickNext(page);
     assert.match(await page.locator('#form-error').innerText(), /보증금/);
     await page.fill('#deposit-input', '35000');
+    // 전세 is the default and hides the rent field, so a rent is only asked
+    // for — and only rejected — once the contract is declared a monthly one.
+    assert.equal(await page.locator('#rent-field').isVisible(), false);
+    await page.check('input[name="contractType"][value="wolse"]');
+    assert.equal(await page.locator('#rent-field').isVisible(), true);
     await page.fill('#rent-input', '-1');
     await clickNext(page);
     assert.match(await page.locator('#form-error').innerText(), /월세/);
-    await page.fill('#rent-input', '0');
+    // Switching back clears it: a stale rent would describe this as monthly.
+    await page.check('input[name="contractType"][value="jeonse"]');
+    assert.equal(await page.locator('#rent-field').isVisible(), false);
+    assert.equal(await page.locator('#rent-input').inputValue(), '0');
+    // The two tiles are one control, so they are one size. '.form-step label'
+    // is a flex row, and inheriting it shrank each tile to its own text.
+    const tileBoxes = await page.locator('.type-option > span').evaluateAll(
+      (els) => els.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height) };
+      }),
+    );
+    assert.equal(tileBoxes.length, 2);
+    assert.deepEqual(tileBoxes[0], tileBoxes[1], `전세/월세 tiles differ: ${JSON.stringify(tileBoxes)}`);
     await fit(page, `${width}px wizard step 3`);
     if ([360, 1440].includes(width)) await capture(page, `wizard-${width}`);
     await clickNext(page);
@@ -134,7 +160,7 @@ try {  for (const width of [360, 390, 768, 1440]) {
     // Two cards carry a .ratio-value now; this one is the auction-risk ratio.
     assert.match(await page.locator('#ratio-content .ratio-value').innerText(), /58\.3/);
     assert.equal(await page.locator('#ratio-card').getAttribute('data-verdict'), 'safe');
-    assert.equal(await page.locator('#sample-count').innerText(), '표본 12건');
+    assert.match(await page.locator('#ratio-content .ratio-calculation').innerText(), /매매 표본 12건/);
     // The last gauge tick sits at left:100%, where the available width is 0.
     // Without white-space:nowrap it shrink-wraps to one character per line.
     const tickBoxes = await page.locator('.gauge-ticks > span').evaluateAll(
@@ -147,19 +173,37 @@ try {  for (const width of [360, 390, 768, 1440]) {
     assert.ok(tallestTick < 24, `gauge tick wrapped: ${JSON.stringify(tickBoxes)}`);
     results.push({ check: `${width}px gauge ticks stay on one line`, result: 'pass', tallestTick });
 
-    // Every number printed on the chart must be an observed value. Padded axis
-    // bounds look like data and contradict the statistics table below them.
-    const chartNumbers = await page.locator('#distribution-content .box-plot text').evaluateAll(
-      (els) => els.map((el) => el.textContent.trim()).filter((t) => /\d/.test(t)),
+    // The sale box plot was replaced by three tiles, one per contract kind,
+    // each opening its filings in a modal.
+    const tiles = await page.locator('.recent-tile').evaluateAll(
+      (els) => els.map((el) => ({
+        kind: el.dataset.kind,
+        label: el.querySelector('.recent-tile-label').textContent,
+        count: el.querySelector('.recent-count').textContent,
+        disabled: el.disabled,
+      })),
     );
-    const tableNumbers = await page.locator('#distribution-content .distribution-stats dd').evaluateAll(
-      (els) => els.map((el) => el.textContent.trim()),
+    assert.deepEqual(tiles.map((t) => t.kind), ['jeonse', 'wolse', 'sales']);
+    assert.deepEqual(tiles.map((t) => t.label), ['전세', '월세', '매매']);
+    // 14, not the 12 the ratio card sampled: this card is the whole complex,
+    // and narrowing it to +/-10% would leave most complexes with nothing here.
+    assert.equal(tiles[2].count, '14건');
+    // One rent filing in the fixture, and it is a jeonse one.
+    assert.equal(tiles[0].count, '1건');
+    assert.equal(tiles[1].disabled, true, 'a kind with no filings is still pressable');
+
+    await page.locator('.recent-tile[data-kind="sales"]').click();
+    await page.locator('#filing-dialog').waitFor({ state: 'visible' });
+    assert.ok(await page.locator('#filing-dialog').evaluate((el) => el.matches(':modal')),
+      'the filing list opened without a backdrop');
+    const dialogRows = await page.locator('#filing-dialog tbody tr').evaluateAll(
+      (els) => els.map((tr) => tr.children[0].textContent.trim()),
     );
-    const depositLabel = await page.locator('#deposit-input').inputValue();
-    const allowed = new Set([...tableNumbers, new Intl.NumberFormat('ko-KR').format(Number(depositLabel))]);
-    const invented = chartNumbers.filter((n) => ![...allowed].some((a) => n.includes(a)));
-    assert.deepEqual(invented, [], `chart shows numbers absent from the statistics table: ${JSON.stringify({ chartNumbers, tableNumbers })}`);
-    results.push({ check: `${width}px chart prints only observed values`, result: 'pass', chartNumbers });
+    assert.deepEqual(dialogRows, [...dialogRows].sort().reverse(), 'filings are not newest first');
+    assert.ok(dialogRows.length <= 20, `the popup lists ${dialogRows.length} rows`);
+    await page.locator('#filing-dialog-close').click();
+    await page.locator('#filing-dialog').waitFor({ state: 'hidden' });
+    results.push({ check: `${width}px filing tiles open their filings in a modal`, result: 'pass', counts: tiles.map((t) => t.count) });
 
     // The fixed footer carries the standing legal notice. Repeating it in the
     // report body costs a screenful on mobile and tells the reader nothing new.
@@ -176,11 +220,13 @@ try {  for (const width of [360, 390, 768, 1440]) {
     await page.fill('#area-input', '59');
     await clickNext(page);
     await page.locator('#result-screen').waitFor({ state: 'visible' });
-    assert.equal(await page.locator('#sample-count').innerText(), '표본 2건');
+    // No derived statistic survives a thin sample. Raw filings still do: the
+    // recent card lists what was filed, which is not a statistic about it.
     assert.equal(await page.locator('.ratio-value').count(), 0);
     assert.equal(await page.locator('.ratio-gauge').count(), 0);
     assert.equal(await page.locator('.box-plot').count(), 0);
     assert.equal(await page.locator('.distribution-stats').count(), 0);
+    assert.equal(await page.locator('.recent-tile').count(), 3);
     assert.equal(await page.locator('#checklist-count').innerText(), '0 / 5 확인');
     assert.match(await page.locator('#ratio-content').innerText(), /표본 부족 — 판정 불가/);
     await fit(page, `${width}px result 2 samples, no numeric statistics`);
@@ -189,13 +235,12 @@ try {  for (const width of [360, 390, 768, 1440]) {
     await page.fill('#area-input', '120');
     await clickNext(page);
     await page.locator('#result-screen').waitFor({ state: 'visible' });
-    assert.equal(await page.locator('#sample-count').innerText(), '표본 0건');
     assert.equal(await page.locator('.ratio-value').count(), 0);
     await fit(page, `${width}px result 0 samples`);
     await page.locator('#edit-input').click();
     await page.fill('#area-input', '84');
     await page.fill('#deposit-input', '80000');
-    await page.fill('#rent-input', '50');
+    await setContractType(page, '50');
     await clickNext(page);
     await page.locator('#result-screen').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#ratio-card').getAttribute('data-verdict'), 'danger');
@@ -321,7 +366,7 @@ try {  for (const width of [360, 390, 768, 1440]) {
   await clickNext(page);
   await page.fill('#area-input', '84');
   await page.fill('#deposit-input', '35000');
-  await page.fill('#rent-input', '0');
+  await setContractType(page, '0');
   await clickNext(page);
   await page.locator('#result-screen').waitFor({ state: 'visible' });
   assert.match(await page.locator('#contract-summary').innerText(), new RegExp(liveName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
@@ -357,8 +402,9 @@ try {  for (const width of [360, 390, 768, 1440]) {
   );
   assert.ok(cardOrder[0].includes('market-card'), `the market card does not lead: ${cardOrder}`);
   assert.ok(cardOrder[1].includes('ratio-card'), `the jeonse ratio is not second: ${cardOrder}`);
-  assert.equal(await page.locator('.distribution-card').evaluate((el) => el.open), false,
-    'the sale distribution is not collapsed');
+  assert.ok(cardOrder[2].includes('recent-card'), `the recent filings are not third: ${cardOrder}`);
+  assert.equal(await page.locator('.distribution-card').count(), 0,
+    'the sale box plot came back');
   const marketSample = await page.locator('#market-sample').innerText();
   const marketText = await page.locator('#market-content').innerText();
   assert.match(marketSample, /전세 표본 \d+건/);
@@ -383,6 +429,61 @@ try {  for (const width of [360, 390, 768, 1440]) {
       `the market chart printed ${printed}, which is not an observed deposit: ${marketTable}`);
   }
   results.push({ check: 'market chart prints only observed deposits', result: 'pass', marketTable });
+
+  // The filings behind the median, so the reader can check the summary against
+  // the rows. Newest first, and every deposit listed is inside the whiskers.
+  // textContent runs the deposit and its difference line together, so the
+  // amount is read from its own element rather than sliced out of the cell.
+  const filings = await page.locator('#market-content .filing-list tbody tr').evaluateAll(
+    (els) => els.map((tr) => ({
+      date: tr.children[0].textContent.trim(),
+      deposit: Number(tr.querySelector('.filing-deposit strong').textContent.replace(/,/g, '')),
+    })),
+  );
+  assert.ok(filings.length >= 3, `the filing list is missing: ${filings.length} rows`);
+  // Open by default, and above the chart. Collapsed and below, the first person
+  // to test the report asked for this feature as if it did not exist.
+  assert.equal(await page.locator('#market-content .filing-list').evaluate((el) => el.open), true,
+    'the amounts are behind a click again');
+  assert.ok(await page.locator('#market-content .filing-list').evaluate(
+    (el) => !!(el.compareDocumentPosition(el.closest('#market-content').querySelector('.box-plot'))
+      & Node.DOCUMENT_POSITION_FOLLOWING),
+  ), 'the chart is above the amounts it summarises');
+  const dates = filings.map((f) => f.date);
+  assert.deepEqual(dates, [...dates].sort().reverse(), 'filings are not newest first');
+  const bounds = marketTable.map((n) => Number(n.replace(/,/g, '')));
+  const low = Math.min(...bounds), high = Math.max(...bounds);
+  for (const { deposit } of filings) {
+    assert.ok(deposit >= low && deposit <= high,
+      `a filing lists ${deposit}, outside the plotted range ${low}-${high}`);
+  }
+  results.push({ check: 'the filing list backs the median it sits under', result: 'pass', rows: filings.length });
+
+  // A monthly contract gets its own comparison, not the jeonse one. Deposit and
+  // rent trade against each other, so the sample is confined to filings that
+  // bought a comparable deposit and the window is printed on screen.
+  await page.locator('#edit-input').click();
+  await page.fill('#deposit-input', '20000');
+  await setContractType(page, '420');
+  await clickNext(page);
+  await page.locator('#result-screen').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#market-title').innerText(), '같은 단지 월세 시세와 비교');
+  assert.match(await page.locator('#market-card .report-description').innerText(), /보증금이 내 계약과 ±20% 이내인 월세 계약만/);
+  const wolseCalc = await page.locator('#market-content .ratio-calculation').innerText();
+  assert.match(wolseCalc, /월세 중위가/);
+  assert.match(wolseCalc, /보증금 16,000만원~24,000만원 구간/);
+  // Every listed filing is inside the printed deposit window; that claim is the
+  // only thing making these rents comparable to each other at all.
+  const wolseRows = await page.locator('#market-content .filing-list tbody tr').evaluateAll(
+    (els) => els.map((tr) => Number(tr.children[3].textContent.replace(/[^\d]/g, ''))),
+  );
+  assert.ok(wolseRows.length >= 3, `the monthly comparison listed ${wolseRows.length} filings`);
+  for (const deposit of wolseRows) {
+    assert.ok(deposit >= 16000 && deposit <= 24000,
+      `a filing at deposit ${deposit} is outside the ±20% window it claims`);
+  }
+  assert.match(await page.locator('#market-content .filing-list thead').innerText(), /월세/);
+  results.push({ check: 'a monthly contract is compared against comparable deposits', result: 'pass', rows: wolseRows.length });
 
   // A missing ratio has to say which kind of missing it is. 'not enough
   // samples' reads like a bug when the real reason is that the complex simply
@@ -442,12 +543,16 @@ try {  for (const width of [360, 390, 768, 1440]) {
   const wrongSize = await reportWith([50000, 60000, 70000, 80000], '120');
   assert.doesNotMatch(wrongSize, /0건뿐/, `a contradictory count reached the screen: ${wrongSize}`);
   assert.match(wrongSize, /4건/, 'it should say the complex does sell');
-  // The sale distribution collapsed under the market card, so a reader has to
-  // open it before the two cards can contradict each other. Open it the way
-  // they would rather than reading hidden text.
-  await page.locator('.distribution-card > summary').click();
-  const wrongSizeDistribution = await page.locator('#distribution-content').innerText();
-  assert.match(wrongSizeDistribution, /부근 거래가 없어/, `the two cards disagree: ${wrongSizeDistribution}`);
+  // The sale distribution card is gone, so there is no second card left to
+  // contradict this one. What must still hold is that the sales the ratio card
+  // says exist are the ones the sale tile counts and its popup lists.
+  assert.equal(await page.locator('.recent-tile[data-kind="sales"] .recent-count').innerText(), '4건');
+  await page.locator('.recent-tile[data-kind="sales"]').click();
+  await page.locator('#filing-dialog').waitFor({ state: 'visible' });
+  const listedSales = await page.locator('#filing-dialog tbody tr').count();
+  assert.equal(listedSales, 4, `the ratio card says 4 sales but the popup lists ${listedSales}`);
+  await page.locator('#filing-dialog-close').click();
+  await page.locator('#filing-dialog').waitFor({ state: 'hidden' });
   results.push({ check: 'sales at another size are not reported as zero sales', result: 'pass' });
 
   const enough = await reportWith([50000, 60000, 70000, 80000]);

@@ -58,15 +58,117 @@ export function tradeDistribution(trades, targetArea) {
 // with 70 a month is not comparable to a 전세 deposit without assuming a
 // conversion rate, and assuming one would put a number on screen that no
 // filing contains.
-export function similarDeposits(rents, targetArea) {
+function comparableJeonse(rents, targetArea) {
   if (!Array.isArray(rents) || !Number.isFinite(targetArea) || targetArea <= 0) return [];
-  return rents
-    .filter((r) => r && Number.isFinite(r.area) && r.area > 0 &&
-      Math.abs(r.area - targetArea) <= targetArea * 0.1 + Number.EPSILON * targetArea * 4 &&
-      (r.monthlyRent ?? 0) === 0)
-    .map((r) => r.deposit)
-    .filter((d) => Number.isFinite(d) && d > 0)
-    .sort((a, b) => a - b);
+  return rents.filter((r) => r && Number.isFinite(r.area) && r.area > 0 &&
+    Math.abs(r.area - targetArea) <= targetArea * 0.1 + Number.EPSILON * targetArea * 4 &&
+    (r.monthlyRent ?? 0) === 0 &&
+    Number.isFinite(r.deposit) && r.deposit > 0);
+}
+
+export function similarDeposits(rents, targetArea) {
+  return comparableJeonse(rents, targetArea).map((r) => r.deposit).sort((a, b) => a - b);
+}
+
+// The filings the median was computed from, newest first. A reader who does not
+// trust a median can read the rows it came from, and the two cannot disagree
+// because both start from comparableJeonse.
+const filedAt = (r) => (r.year ?? 0) * 10000 + (r.month ?? 0) * 100 + (r.day ?? 0);
+
+// Sorting a copy keeps the caller's array in filing order, and the index
+// tiebreak keeps same-day rows stable rather than engine-dependent.
+function newestFirst(rows) {
+  return rows
+    .map((r, index) => ({ r, index }))
+    .sort((a, b) => filedAt(b.r) - filedAt(a.r) || a.index - b.index)
+    .map(({ r }) => r);
+}
+
+export function jeonseTransactions(rents, targetArea) {
+  return newestFirst(comparableJeonse(rents, targetArea));
+}
+
+// --- 같은 단지 최근 실거래, 세 종류 ---
+//
+// Deliberately NOT filtered by area. The comparison above answers "is my
+// deposit high for this size"; this answers "what is trading here lately",
+// and narrowing it to +/-10% would leave most complexes with nothing to show.
+// Each row prints its own 전용면적 so the reader can see the difference.
+//
+// Cancelled sales are counted and not listed. A deal the ministry withdrew is
+// not a price anything traded at, which is the whole question this card
+// answers, so putting it in the table with a badge would be answering a
+// different one.
+// --- 월세 시세 대비 ---
+//
+// A rent on its own says nothing. Measured on 경희궁자이 84㎡, the same complex
+// in the same six months filed 4,000/440 and 125,000/20: deposit and rent trade
+// against each other along a curve, so the median rent of all 38 filings
+// describes no actual contract. Comparing a rent to it would be the conversion
+// this report refuses, done implicitly.
+//
+// So the sample is narrowed to filings that bought a comparable deposit, and
+// the deposit window is printed on screen. Within that band a rent is a rent.
+export const DEPOSIT_BAND = 0.2;
+
+function comparableWolse(rents, targetArea, deposit) {
+  if (!Array.isArray(rents) || !Number.isFinite(targetArea) || targetArea <= 0
+    || !Number.isFinite(deposit) || deposit <= 0) return [];
+  const low = deposit * (1 - DEPOSIT_BAND);
+  const high = deposit * (1 + DEPOSIT_BAND);
+  return rents.filter((r) => r && Number.isFinite(r.area) && r.area > 0 &&
+    Math.abs(r.area - targetArea) <= targetArea * 0.1 + Number.EPSILON * targetArea * 4 &&
+    Number.isFinite(r.monthlyRent) && r.monthlyRent > 0 &&
+    Number.isFinite(r.deposit) && r.deposit >= low && r.deposit <= high);
+}
+
+export function wolseRatio(monthlyRent, rents, targetArea, deposit) {
+  if (!Number.isFinite(monthlyRent) || monthlyRent <= 0) return null;
+  const rows = comparableWolse(rents, targetArea, deposit);
+  if (!rows.length) return null;
+  const medianRent = median(rows.map((r) => r.monthlyRent).sort((a, b) => a - b));
+  const ratio = (monthlyRent / medianRent) * 100;
+  if (!Number.isFinite(ratio)) return null;
+  return {
+    ratio,
+    sampleSize: rows.length,
+    medianRent,
+    depositLow: deposit * (1 - DEPOSIT_BAND),
+    depositHigh: deposit * (1 + DEPOSIT_BAND),
+  };
+}
+
+export function wolseDistribution(rents, targetArea, deposit) {
+  const r = comparableWolse(rents, targetArea, deposit).map((x) => x.monthlyRent).sort((a, b) => a - b);
+  const n = r.length;
+  if (n < 3) return null;
+  return { min: r[0], q1: r[Math.ceil(n * 0.25) - 1], median: median(r),
+    q3: r[Math.ceil(n * 0.75) - 1], max: r[n - 1], sampleSize: n };
+}
+
+export function wolseTransactions(rents, targetArea, deposit) {
+  return newestFirst(comparableWolse(rents, targetArea, deposit));
+}
+
+export function recentFilings(trades, rents, limit = 6) {
+  const usableRent = (r) => r && Number.isFinite(r.area) && Number.isFinite(r.deposit) && r.deposit > 0;
+  const rentRows = Array.isArray(rents) ? rents.filter(usableRent) : [];
+  const saleRows = Array.isArray(trades)
+    ? trades.filter((t) => t && Number.isFinite(t.area) && Number.isFinite(t.price) && t.price > 0)
+    : [];
+
+  const jeonse = newestFirst(rentRows.filter((r) => (r.monthlyRent ?? 0) === 0));
+  const wolse = newestFirst(rentRows.filter((r) => (r.monthlyRent ?? 0) > 0));
+  const active = newestFirst(saleRows.filter((t) => !t.cancelled));
+
+  const cap = Number.isInteger(limit) && limit > 0 ? limit : 6;
+  return {
+    jeonse: jeonse.slice(0, cap),
+    wolse: wolse.slice(0, cap),
+    sales: active.slice(0, cap),
+    totals: { jeonse: jeonse.length, wolse: wolse.length, sales: active.length },
+    cancelledSales: saleRows.length - active.length,
+  };
 }
 
 export function marketRatio(deposit, rents, targetArea) {

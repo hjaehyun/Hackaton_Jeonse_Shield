@@ -75,9 +75,15 @@
           <div class="privacy-note"><span class="mini-shield" aria-hidden="true">✓</span><p><strong>안심하고 입력하세요</strong><br>입력 정보는 서버로 전송하거나 저장하지 않습니다.</p></div>
         </fieldset>
         <fieldset class="form-step" data-step="3" hidden><legend><small>STEP 03</small>계약 조건을 확인해 주세요.</legend><p class="field-description">계약서에 적힌 전용면적과 금액을 입력해 주세요.</p>
+          <span class="field-label" id="contract-type-label">계약 종류 <span class="required">필수</span></span>
+          <div class="contract-type" role="radiogroup" aria-labelledby="contract-type-label">
+            <label class="type-option"><input type="radio" name="contractType" value="jeonse" checked><span><strong>전세</strong><small>월세 없음</small></span></label>
+            <label class="type-option"><input type="radio" name="contractType" value="wolse"><span><strong>월세</strong><small>보증금 + 매달 월세</small></span></label>
+          </div>
+          <p class="field-hint" id="type-hint">월세 계약은 보증금만 비교합니다. 월세를 전세로 환산하지 않습니다.</p>
           <label for="area-input">전용면적 <span class="required">필수</span></label><div class="input-unit"><input id="area-input" name="area" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="84" required aria-describedby="form-error area-hint"><span>㎡</span></div><p class="field-hint" id="area-hint">공급면적이 아닌 전용면적을 입력해 주세요.</p>
           <label for="deposit-input">보증금 <span class="required">필수</span></label><div class="input-unit"><input id="deposit-input" name="deposit" type="number" inputmode="numeric" min="1" step="1" placeholder="35,000" required aria-describedby="form-error deposit-hint"><span>만원</span></div><p class="field-hint" id="deposit-hint">예: 3억 5천만원 → 35000 입력</p>
-          <label for="rent-input">월세 <span class="required">필수</span></label><div class="input-unit"><input id="rent-input" name="rent" type="number" inputmode="numeric" min="0" step="1" value="0" required aria-describedby="form-error rent-hint"><span>만원</span></div><p class="field-hint" id="rent-hint">전세는 0을 입력하세요. 월세는 보증금 비율만 비교하며 월세를 환산하지 않습니다.</p>
+          <div id="rent-field" hidden><label for="rent-input">월세 <span class="required">필수</span></label><div class="input-unit"><input id="rent-input" name="rent" type="number" inputmode="numeric" min="1" step="1" placeholder="120" value="0" aria-describedby="form-error rent-hint"><span>만원</span></div><p class="field-hint" id="rent-hint">매달 내는 금액을 입력해 주세요.</p></div>
           <aside class="demo-hint"><strong>시연용 면적 안내</strong><br>84㎡: 표본 12건 · 59㎡: 표본 2건 · 120㎡: 표본 없음<br>샘플 거래는 고정되어 있으며 실제 조회가 아닙니다.</aside>
         </fieldset>
         <p id="form-error" class="form-error" role="alert"></p>
@@ -94,7 +100,7 @@
         <p id="monthly-rent-note" class="monthly-rent-note" hidden>월세 계약은 보증금 비율만 표시합니다. 월세 환산, 총 주거비 및 월세 적정성은 이번 진단에 포함되지 않습니다.</p>
       <article class="report-card market-card" id="market-card" aria-labelledby="market-title"><div class="card-title-row"><h2 id="market-title">같은 단지 전세 시세와 비교</h2><span id="market-sample" class="sample-label"></span></div><p class="report-description">동일 단지 · 전용면적 ±10% · 월세 없는 전세 계약만 · 가격 단위: 만원</p><div id="market-content"></div></article>
       <article class="report-card ratio-card" id="ratio-card" aria-labelledby="ratio-title"><div class="card-title-row"><h2 id="ratio-title">보증금 반환 위험 — 전세가율</h2></div><p class="report-description">집이 경매로 넘어갔을 때를 가정한 지표입니다. 동일 단지 유사 면적의 매매 중위가 기준</p><div id="ratio-content"></div></article>
-      <details class="report-card distribution-card"><summary><span class="summary-heading">유사 면적 매매 거래 분포</span><span id="sample-count" class="sample-label"></span></summary><p class="report-description">전세가율의 분모가 된 매매 거래입니다. 동일 단지 · 전용면적 ±10% · 가격 단위: 만원</p><div id="distribution-content"></div></details>
+      <article class="report-card recent-card" id="recent-card" aria-labelledby="recent-title"><div class="card-title-row"><h2 id="recent-title">이 단지 최근 실거래</h2><span id="recent-sample" class="sample-label"></span></div><p class="report-description">전용면적과 상관없이 이 단지에서 최근 신고된 거래입니다. 위 두 비교는 전용면적 ±10%만 씁니다. 가격 단위: 만원</p><div id="recent-content" class="recent-tiles"></div></article>
       <section class="report-card checklist-card" aria-labelledby="checklist-title"><div class="card-title-row"><div><span class="eyebrow muted">BEFORE YOU SIGN</span><h2 id="checklist-title">계약 전, 꼭 확인하세요</h2></div><span id="checklist-count" class="checklist-count" aria-live="polite">0 / 5 확인</span></div><p class="report-description">비율이 낮아도 권리관계에 따라 위험할 수 있습니다. 체크 상태는 저장되지 않습니다.</p><div class="checklist-grid">
         <label class="check-item"><input type="checkbox"><span><strong>등기부등본 확인</strong><small>소유자와 권리관계 확인</small></span></label>
         <label class="check-item"><input type="checkbox"><span><strong>확정일자</strong><small>임대차계약서 확정일자 확인</small></span></label>
@@ -119,6 +125,13 @@
       <p>실거래가는 신고 기준 자료로 최근 거래분이 누락될 수 있습니다. 실제 계약 전에는 등기부등본 확인과 전문가 상담을 권장합니다.</p>
     </section>
   </main>
+  <dialog id="filing-dialog" class="filing-dialog" aria-labelledby="filing-dialog-title">
+    <div class="filing-dialog-head">
+      <div><span class="eyebrow muted">RECENT FILINGS</span><h2 id="filing-dialog-title" tabindex="-1"></h2><p id="filing-dialog-sub" class="report-description"></p></div>
+      <button type="button" id="filing-dialog-close" class="button button-secondary" autofocus>닫기</button>
+    </div>
+    <div id="filing-dialog-body"></div>
+  </dialog>
   <footer id="site-footer" class="site-footer"><p class="footer-disclaimer">본 서비스는 공개 데이터를 기반으로 한 참고용 정보이며 법률 자문이 아닙니다.</p></footer>
 </body>
 </html>

@@ -55,3 +55,100 @@
 .distribution-card>.report-description,.distribution-card>#distribution-content{padding:0 24px}
 .distribution-card>#distribution-content{padding-bottom:22px}
 @media(max-width:720px){.market-card{padding:22px 19px;margin-top:17px}.market-card .ratio-value{font-size:50px}.market-card .ratio-value>small{font-size:25px}.market-lead{font-size:13px}.distribution-card>summary{padding:17px 19px}.summary-heading{font-size:14px}.distribution-card>.report-description,.distribution-card>#distribution-content{padding-inline:19px}}
+
+/* The filings behind the median. Collapsed by default: it is evidence for the
+   number above it, not something every reader needs open. */
+.filing-list{margin-top:20px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.filing-list>summary{display:flex;align-items:center;gap:10px;padding:13px 16px;cursor:pointer;list-style:none}
+.filing-list>summary::-webkit-details-marker{display:none}
+.filing-list>summary::after{content:'▾';color:#8a95a2;font-size:12px;margin-left:auto;transition:transform .15s}
+.filing-list[open]>summary::after{transform:rotate(180deg)}
+.filing-list>summary:hover{background:#fafbfc}
+.filing-list>summary .summary-heading{font-size:13px;font-weight:700}
+.filing-hint{font-size:11px;color:#8a95a2;font-weight:500}
+.filing-scroll{max-height:290px;overflow-y:auto;border-top:1px solid var(--line)}
+.filing-table{width:100%;border-collapse:collapse;font-size:12px}
+.filing-table th{position:sticky;top:0;background:#f7f9fa;color:#6b7889;font-size:11px;font-weight:650;padding:9px 16px;border-bottom:1px solid var(--line);white-space:nowrap}
+.filing-table td{padding:10px 16px;border-bottom:1px solid #f1f4f6;color:var(--ink);white-space:nowrap}
+.filing-table tr:last-child td{border-bottom:0}
+.filing-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+.filing-deposit strong{font-size:13px;font-weight:700}
+.filing-deposit small{display:block;margin-top:3px;font-size:10px;font-weight:550}
+.filing-deposit small.over{color:var(--caution)}
+.filing-deposit small.under{color:var(--green)}
+.filing-deposit small.same{color:#8a95a2}
+@media(max-width:720px){.filing-list>summary{padding:12px 13px}.filing-list>summary .summary-heading{font-size:12px}.filing-hint{display:none}.filing-table th,.filing-table td{padding:9px 11px}.filing-table{font-size:11px}.filing-deposit strong{font-size:12px}.filing-deposit small{font-size:9px}}
+
+/* The list leads the card now, so it carries the weight the chart used to. */
+.filing-list{margin:22px 0 0}
+.market-card .filing-list+.box-plot{margin-top:26px}
+.filing-list>summary .summary-heading{font-size:14px}
+.filing-scroll{max-height:340px}
+
+/* 이 단지 최근 실거래 — three kinds, six rows each. Replaced the sale box plot:
+   six dated rows a reader can name beat a chart of prices they cannot. */
+.recent-card{margin-bottom:30px}
+.recent-group{margin-top:22px}
+.recent-group:first-child{margin-top:18px}
+.recent-group-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding-bottom:9px;border-bottom:1px solid var(--line)}
+.recent-group-head h3{font-size:15px;font-weight:750;letter-spacing:-.4px}
+.recent-count{font-size:11px;color:#8a95a2;font-weight:600;white-space:nowrap}
+.recent-empty{font-size:12px;color:#8a95a2;padding:14px 2px 2px}
+.recent-table{margin-top:2px}
+.recent-table th{position:static;background:transparent;padding:9px 10px;border-bottom:1px solid #f1f4f6;text-align:right}
+.recent-table th:first-child{text-align:left;padding-left:2px}
+.recent-table td{padding:10px}
+.recent-table td:first-child{padding-left:2px;color:var(--muted)}
+.recent-table td:last-child{padding-right:2px}
+.recent-table th:last-child{padding-right:2px}
+.recent-table strong{font-size:13px;font-weight:700;color:var(--navy)}
+@media(max-width:720px){.recent-group{margin-top:19px}.recent-group-head h3{font-size:14px}.recent-table th,.recent-table td{padding:9px 6px}.recent-table strong{font-size:12px}}
+
+/* Three tiles, one per contract kind; the filings themselves open in a modal.
+   The tile face carries the newest filing so it is worth pressing. */
+.recent-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px}
+.recent-tile{display:flex;flex-direction:column;align-items:stretch;gap:0;text-align:left;font:inherit;background:#fbfcfd;border:1px solid var(--line);border-radius:9px;padding:16px 17px 14px;transition:background .14s,border-color .14s,transform .14s}
+.recent-tile:hover:not(:disabled){background:#f4f8f6;border-color:#c6d8cd;transform:translateY(-1px)}
+.recent-tile:disabled{cursor:default;opacity:.62}
+.recent-tile .recent-group-head{padding:0;border:0;width:100%}
+.recent-tile-label{font-size:14px;font-weight:750;letter-spacing:-.3px;color:var(--navy)}
+.recent-tile-amount{display:block;margin-top:13px;font-size:22px;font-weight:750;letter-spacing:-.8px;line-height:1.2;font-variant-numeric:tabular-nums;color:var(--navy)}
+.recent-tile-when{display:block;margin-top:5px;font-size:11px;color:#8a95a2}
+.recent-tile-more{display:block;margin-top:12px;font-size:11px;font-weight:650;color:var(--green)}
+.recent-tile-more::after{content:' →'}
+.recent-tile .recent-empty{padding:13px 0 2px;font-size:12px}
+
+.filing-dialog{width:min(560px,calc(100% - 36px));max-height:min(82vh,720px);padding:0;border:0;border-radius:12px;box-shadow:0 26px 70px #1b2a4a26;color:var(--navy);overflow:hidden}
+.filing-dialog::backdrop{background:#1b2a4a4d}
+.filing-dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 24px 16px;border-bottom:1px solid var(--line)}
+.filing-dialog-head h2{font-size:19px;margin-top:6px;letter-spacing:-.5px}
+.filing-dialog-head h2:focus-visible{outline:3px solid #74b9a4;outline-offset:4px}
+.filing-dialog-head .report-description{margin-top:7px}
+.filing-dialog-head .button{min-height:38px;padding:7px 14px;font-size:12px;flex-shrink:0}
+#filing-dialog-body{padding:4px 24px 22px}
+#filing-dialog-body .filing-scroll{max-height:min(52vh,430px);border:1px solid var(--line);border-radius:8px}
+#filing-dialog-body .recent-table th{position:sticky;top:0;background:#f7f9fa;z-index:1;padding:10px 14px}
+#filing-dialog-body .recent-table td{padding:11px 14px}
+#filing-dialog-body .recent-table th:first-child,#filing-dialog-body .recent-table td:first-child{padding-left:16px}
+#filing-dialog-body .recent-table th:last-child,#filing-dialog-body .recent-table td:last-child{padding-right:16px}
+#filing-dialog-body .distribution-note{margin-top:12px}
+@media(max-width:720px){.recent-tiles{grid-template-columns:1fr;gap:9px;margin-top:17px}.recent-tile{padding:14px 15px 13px}.recent-tile-amount{margin-top:9px;font-size:20px}.filing-dialog{width:calc(100% - 24px);max-height:86vh}.filing-dialog-head{padding:18px 17px 14px}.filing-dialog-head h2{font-size:17px}#filing-dialog-body{padding:4px 17px 18px}#filing-dialog-body .recent-table th,#filing-dialog-body .recent-table td{padding:10px 8px}}
+
+/* 전세 / 월세 as an explicit choice. The old form asked for a rent of 0 to
+   mean 전세, which is a rule the reader had to be told rather than see. */
+.field-label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:650;margin:20px 0 8px}
+.contract-type{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+/* Scoped past '.form-step label', which is a flex row: inheriting it made the
+   tile shrink to its own text, so 전세 and 월세 came out different widths. */
+.form-step .type-option{display:block;position:relative;cursor:pointer;margin:0;gap:0;font-size:inherit;font-weight:inherit}
+/* Transparent but full size: the whole tile is the hit area, and a zero-sized
+   control counts as invisible to keyboards, assistive tech and Playwright. */
+.type-option input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.type-option>span{display:flex;flex-direction:column;justify-content:center;gap:3px;width:100%;min-height:72px;border:1px solid #dce2e8;border-radius:7px;padding:13px 15px;background:#fff;transition:border-color .14s,background .14s,box-shadow .14s}
+.type-option strong{font-size:14px;font-weight:700;color:var(--navy)}
+.type-option small{font-size:11px;color:#8a95a2}
+.type-option:hover>span{border-color:#c6d8cd}
+.type-option input:checked+span{border-color:var(--green);background:#f3f8f5;box-shadow:inset 0 0 0 1px var(--green)}
+.type-option input:checked+span strong{color:var(--green)}
+.type-option input:focus-visible+span{outline:3px solid #74b9a4;outline-offset:3px}
+@media(max-width:720px){.field-label{font-size:12px;margin-top:17px}.type-option>span{padding:12px 13px}.type-option strong{font-size:13px}.type-option small{font-size:10px}}
