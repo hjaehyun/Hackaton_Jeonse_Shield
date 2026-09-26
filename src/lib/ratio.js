@@ -111,15 +111,41 @@ export function jeonseTransactions(rents, targetArea) {
 // the deposit window is printed on screen. Within that band a rent is a rent.
 export const DEPOSIT_BAND = 0.2;
 
-function comparableWolse(rents, targetArea, deposit) {
-  if (!Array.isArray(rents) || !Number.isFinite(targetArea) || targetArea <= 0
-    || !Number.isFinite(deposit) || deposit <= 0) return [];
+// The window, and the window as the screen is allowed to state it.
+//
+// Rounding the ends outward puts a number on the card that the filter rejects:
+// 5,579 x 1.2 is 6,694.8, and printing '~6,695만원' promises a range the table
+// can never contain. Deposits are filed in whole 만원, so the inclusive integer
+// bounds are exact — every integer between them passes, every integer outside
+// fails — and those are what the card prints.
+export function depositWindow(deposit) {
+  if (!Number.isFinite(deposit) || deposit <= 0) return null;
   const low = deposit * (1 - DEPOSIT_BAND);
   const high = deposit * (1 + DEPOSIT_BAND);
-  return rents.filter((r) => r && Number.isFinite(r.area) && r.area > 0 &&
-    Math.abs(r.area - targetArea) <= targetArea * 0.1 + Number.EPSILON * targetArea * 4 &&
+  return { low, high, statedLow: Math.ceil(low), statedHigh: Math.floor(high) };
+}
+
+function nearArea(row, targetArea) {
+  return row && Number.isFinite(row.area) && row.area > 0 &&
+    Math.abs(row.area - targetArea) <= targetArea * 0.1 + Number.EPSILON * targetArea * 4;
+}
+
+// Monthly filings at a comparable size, before the deposit window narrows them.
+// Exported because the 'no comparable deposit' message has to count exactly
+// these rows: a second copy of the predicate in the UI drifts from this one and
+// then the message contradicts the table.
+export function nearbyWolse(rents, targetArea) {
+  if (!Array.isArray(rents) || !Number.isFinite(targetArea) || targetArea <= 0) return [];
+  return rents.filter((r) => nearArea(r, targetArea) &&
     Number.isFinite(r.monthlyRent) && r.monthlyRent > 0 &&
-    Number.isFinite(r.deposit) && r.deposit >= low && r.deposit <= high);
+    Number.isFinite(r.deposit) && r.deposit > 0);
+}
+
+function comparableWolse(rents, targetArea, deposit) {
+  const window = depositWindow(deposit);
+  if (!window) return [];
+  return nearbyWolse(rents, targetArea)
+    .filter((r) => r.deposit >= window.low && r.deposit <= window.high);
 }
 
 export function wolseRatio(monthlyRent, rents, targetArea, deposit) {
@@ -129,13 +155,8 @@ export function wolseRatio(monthlyRent, rents, targetArea, deposit) {
   const medianRent = median(rows.map((r) => r.monthlyRent).sort((a, b) => a - b));
   const ratio = (monthlyRent / medianRent) * 100;
   if (!Number.isFinite(ratio)) return null;
-  return {
-    ratio,
-    sampleSize: rows.length,
-    medianRent,
-    depositLow: deposit * (1 - DEPOSIT_BAND),
-    depositHigh: deposit * (1 + DEPOSIT_BAND),
-  };
+  const { low, high, statedLow, statedHigh } = depositWindow(deposit);
+  return { ratio, sampleSize: rows.length, medianRent, depositLow: low, depositHigh: high, statedLow, statedHigh };
 }
 
 export function wolseDistribution(rents, targetArea, deposit) {
@@ -157,8 +178,12 @@ export function recentFilings(trades, rents, limit = 6) {
     ? trades.filter((t) => t && Number.isFinite(t.area) && Number.isFinite(t.price) && t.price > 0)
     : [];
 
-  const jeonse = newestFirst(rentRows.filter((r) => (r.monthlyRent ?? 0) === 0));
-  const wolse = newestFirst(rentRows.filter((r) => (r.monthlyRent ?? 0) > 0));
+  // The split is exhaustive on purpose. Testing '> 0' on both sides would drop
+  // a row whose monthlyRent is neither — the tiles would then sum to less than
+  // the 전월세 count printed in the source line, with nothing saying why.
+  const hasRent = (r) => Number.isFinite(r.monthlyRent) && r.monthlyRent > 0;
+  const jeonse = newestFirst(rentRows.filter((r) => !hasRent(r)));
+  const wolse = newestFirst(rentRows.filter(hasRent));
   const active = newestFirst(saleRows.filter((t) => !t.cancelled));
 
   const cap = Number.isInteger(limit) && limit > 0 ? limit : 6;

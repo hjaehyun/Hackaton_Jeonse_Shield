@@ -2,7 +2,7 @@ import {
   jeonseRatio, verdict, similarPrices,
   marketRatio, marketVerdict, depositDistribution, similarDeposits,
   wolseRatio, wolseDistribution, wolseTransactions, DEPOSIT_BAND,
-  jeonseTransactions, recentFilings,
+  jeonseTransactions, recentFilings, depositWindow, nearbyWolse,
 } from './lib/ratio.js';
 import { listComplexes, complexTransactions, monthRangeLabel, missingRatioReason } from './lib/aggregate.js';
 import { recentMonths } from './lib/months.js';
@@ -340,7 +340,13 @@ function gauge(ratio) {
 const SALE_NOTE = '25%·75%는 실제 관측값(nearest-rank)을 사용합니다.<br>내 보증금 마커는 매매가와의 비교이며 전월세 백분위가 아닙니다.';
 const MARKET_NOTE = '25%·75%는 실제 관측값(nearest-rank)을 사용합니다.<br>월세가 있는 계약은 제외했습니다. 전월세 전환율을 가정하지 않습니다.';
 
-function renderDistribution(stats, deposit, note = SALE_NOTE) {
+// What the plotted values are. The chart is drawn for two different
+// populations, and a screen reader hears only this label: announcing the jeonse
+// card's deposits as '매매 분포' describes the wrong dataset entirely.
+const SALE_LABEL = '매매 분포';
+const MARKET_LABEL = '전세 보증금 분포';
+
+function renderDistribution(stats, deposit, note = SALE_NOTE, what = SALE_LABEL) {
   // Include the deposit in the displayed axis even if outside observed trade range.
   const low = Math.min(stats.min, deposit) * 0.85;
   const high = Math.max(stats.max, deposit) * 1.05;
@@ -357,7 +363,7 @@ function renderDistribution(stats, deposit, note = SALE_NOTE) {
     const align = at < 60 ? 'start' : at > 340 ? 'end' : 'middle';
     return `<text x="${clamped}" y="137" text-anchor="${align}">${format(value)}</text>`;
   };
-  return `<svg class="box-plot" viewBox="0 0 400 153" role="img" aria-label="매매 분포: 최저 ${money(stats.min)}, 하위25% ${money(stats.q1)}, 중위 ${money(stats.median)}, 상위25% ${money(stats.q3)}, 최고 ${money(stats.max)}. 내 보증금 ${money(deposit)}.">
+  return `<svg class="box-plot" viewBox="0 0 400 153" role="img" aria-label="${what}: 최저 ${money(stats.min)}, 하위25% ${money(stats.q1)}, 중위 ${money(stats.median)}, 상위25% ${money(stats.q3)}, 최고 ${money(stats.max)}. 내 보증금 ${money(deposit)}.">
     <line x1="25" y1="115" x2="375" y2="115" stroke="#e6ebe8"/>
     <line x1="${x(stats.min)}" y1="84" x2="${x(stats.max)}" y2="84" stroke="#9db7a9" stroke-width="2"/>
     <line x1="${x(stats.min)}" y1="70" x2="${x(stats.min)}" y2="98" stroke="#9db7a9" stroke-width="2"/>
@@ -374,7 +380,6 @@ function renderDistribution(stats, deposit, note = SALE_NOTE) {
     <p class="distribution-note">${note}</p>`;
 }
 
-// Why the deposit could not be placed against the local jeonse market. Same
 // The filings behind the median, newest first. A median is a summary and a
 // reader is entitled to the rows it summarises; this is also the only place
 // the report shows an individual contract rather than a statistic.
@@ -382,6 +387,7 @@ function renderDistribution(stats, deposit, note = SALE_NOTE) {
 // Built from nodes rather than markup. Nothing here is ministry-supplied text
 // today, but the moment someone adds a 동 or 단지명 column it would be, and a
 // table that was already string-built is where that goes wrong.
+//
 // Open by default. Collapsed, it was not found: the first reader to test this
 // asked for the feature it already shipped, because the chart above it looks
 // like the answer and a disclosure looks like a footnote. What people want
@@ -398,7 +404,9 @@ function renderFilings(rows, myAmount, kind = 'jeonse') {
   label.textContent = `실제 거래된 금액 ${format(rows.length)}건`;
   const hint = document.createElement('span');
   hint.className = 'filing-hint';
-  hint.textContent = '최신순 · 중위가를 낸 거래 전부';
+  // Not '중위가를 낸 거래': this list also ships when the sample was too thin
+  // for a median, and the card would then be claiming one exists.
+  hint.textContent = '최신순 · 비교 대상 거래 전부';
   summary.append(label, hint);
 
   const scroll = document.createElement('div');
@@ -422,14 +430,7 @@ function renderFilings(rows, myAmount, kind = 'jeonse') {
   const body = document.createElement('tbody');
   for (const row of rows) {
     const tr = document.createElement('tr');
-    const dated = row.year && row.month
-      ? `${row.year}.${String(row.month).padStart(2, '0')}${row.day ? `.${String(row.day).padStart(2, '0')}` : ''}`
-      : '날짜 없음';
-    const cells = [
-      dated,
-      `${format(row.area)}㎡`,
-      Number.isFinite(row.floor) ? `${format(row.floor)}층` : '—',
-    ];
+    const cells = [FILING_DATE(row), AREA_CELL(row), FLOOR_CELL(row)];
     // The deposit each rent bought sits next to it: without it the rents look
     // like a spread when they are a curve.
     if (wolse) cells.push(format(row.deposit));
@@ -630,6 +631,7 @@ function renderRecent() {
   );
 }
 
+// Why the deposit could not be placed against the local jeonse market. Same
 // discipline as missingRatioReason: 'not enough samples' is wrong when the
 // real answer is that every filing here is a monthly-rent contract.
 function missingMarketReason(contract) {
@@ -657,27 +659,30 @@ function missingMarketReason(contract) {
 // the part a reader will not guess, so every branch names it.
 function missingWolseReason(contract) {
   const area = `전용 ${format(contract.area)}㎡`;
-  const band = `보증금 ${money(Math.round(contract.deposit * (1 - DEPOSIT_BAND)))}~${money(Math.round(contract.deposit * (1 + DEPOSIT_BAND)))}`;
-  const nearArea = contract.rents.filter((r) => r && Number.isFinite(r.area)
-    && Math.abs(r.area - contract.area) <= contract.area * 0.1 && (r.monthlyRent ?? 0) > 0);
-  const nearby = wolseTransactions(contract.rents, contract.area, contract.deposit);
+  // Stated, not rounded: the window the card names has to be the window the
+  // filter used, or the reader is told to look for rows that cannot be there.
+  const window = depositWindow(contract.deposit);
+  const band = `보증금 ${money(window.statedLow)}~${money(window.statedHigh)}`;
+  // Same predicate the comparison starts from, not a second copy of it.
+  const nearby = nearbyWolse(contract.rents, contract.area);
+  const comparable = wolseTransactions(contract.rents, contract.area, contract.deposit);
   const heading = '월세 시세를 비교할 수 없습니다';
   if (!contract.rents.length) {
     return { heading, lines: [`이 단지는 ${contract.rangeLabel}에 전월세 거래가 없습니다.`] };
   }
-  if (!nearArea.length) {
+  if (!nearby.length) {
     return { heading, lines: [`전월세 ${format(contract.rents.length)}건이 있지만 ${area} 부근(±10%)에 월세 계약이 없습니다.`] };
   }
-  if (!nearby.length) {
+  if (!comparable.length) {
     return {
       heading,
-      lines: [`${area} 부근 월세는 ${format(nearArea.length)}건 있지만, ${band} 구간의 계약이 없습니다.`,
+      lines: [`${area} 부근 월세는 ${format(nearby.length)}건 있지만, ${band} 구간의 계약이 없습니다.`,
         '보증금이 다르면 월세도 달라지므로 서로 비교하지 않습니다.'],
     };
   }
   return {
     heading,
-    lines: [`${band} 구간의 월세 계약이 ${format(nearby.length)}건뿐입니다.`, '표본 3건 이상이 필요합니다.'],
+    lines: [`${band} 구간의 월세 계약이 ${format(comparable.length)}건뿐입니다.`, '표본 3건 이상이 필요합니다.'],
   };
 }
 
@@ -717,7 +722,7 @@ function renderWolseMarket() {
   card.dataset.level = decision.level;
   $('#market-content').innerHTML = `<div class="ratio-value">${displayRatio.toFixed(1)}<small>%</small></div>
     <div class="ratio-status"><span class="verdict-pill market-${decision.level}">${decision.label}</span></div>
-    <p class="ratio-calculation">월세 ${money(contract.rent)} ÷ 월세 중위가 ${money(result.medianRent)}<br>보증금 ${money(Math.round(result.depositLow))}~${money(Math.round(result.depositHigh))} 구간의 ${format(result.sampleSize)}건 기준 · 소수점 둘째 자리 이하 버림</p>
+    <p class="ratio-calculation">월세 ${money(contract.rent)} ÷ 월세 중위가 ${money(result.medianRent)}<br>보증금 ${money(result.statedLow)}~${money(result.statedHigh)} 구간의 ${format(result.sampleSize)}건 기준 · 소수점 둘째 자리 이하 버림</p>
     <p class="ratio-warning">100% 미만 시세보다 낮음 · 100~110% 미만 시세 수준 · 110% 이상 시세보다 높음<br>보증금과 월세는 서로 맞바꿀 수 있어, 보증금이 비슷한 계약끼리만 비교합니다. 보증금 반환의 안전성과는 별개입니다.</p>`;
   $('#market-content').querySelector('.ratio-warning').before(listing);
 }
@@ -756,7 +761,7 @@ function renderMarket() {
   $('#market-content').innerHTML = `<div class="ratio-value">${displayRatio.toFixed(1)}<small>%</small></div>
     <div class="ratio-status"><span class="verdict-pill market-${decision.level}">${decision.label}</span></div>
     <p class="ratio-calculation">보증금 ${money(contract.deposit)} ÷ 전세 중위가 ${money(result.medianDeposit)}<br>소수점 둘째 자리 이하 버림 · 판정은 원래 계산값 기준</p>
-    ${renderDistribution(stats, contract.deposit, MARKET_NOTE)}
+    ${renderDistribution(stats, contract.deposit, MARKET_NOTE, MARKET_LABEL)}
     <p class="ratio-warning">100% 미만 시세보다 낮음 · 100~110% 미만 시세 수준 · 110% 이상 시세보다 높음<br>같은 단지 최근 전세 실거래와의 비교이며, 보증금 반환의 안전성과는 별개입니다.</p>`;
   // Amounts first, chart second. The chart summarises these rows, so it reads
   // as the aside and they read as the answer.

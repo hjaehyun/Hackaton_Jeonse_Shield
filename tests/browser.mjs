@@ -485,6 +485,19 @@ try {  for (const width of [360, 390, 768, 1440]) {
   assert.match(await page.locator('#market-content .filing-list thead').innerText(), /월세/);
   results.push({ check: 'a monthly contract is compared against comparable deposits', result: 'pass', rows: wolseRows.length });
 
+  // The stated window has to be one the filter would accept, not a rounded
+  // version of it. 5,579 x 1.2 is 6,694.8, and the card used to round that to
+  // 6,695 — naming a deposit the table can never contain.
+  await page.locator('#edit-input').click();
+  await page.fill('#deposit-input', '5579');
+  await setContractType(page, '420');
+  await clickNext(page);
+  await page.locator('#result-screen').waitFor({ state: 'visible' });
+  const oddBand = await page.locator('#market-content').innerText();
+  assert.doesNotMatch(oddBand, /6,695만원/, 'the card names a deposit the filter rejects');
+  assert.match(oddBand, /4,464만원~6,694만원/, `the stated window is not the filtered one: ${oddBand.slice(0, 160)}`);
+  results.push({ check: 'the stated deposit window is the filtered one', result: 'pass' });
+
   // A missing ratio has to say which kind of missing it is. 'not enough
   // samples' reads like a bug when the real reason is that the complex simply
   // has no sales.

@@ -4,7 +4,7 @@ import {
   jeonseRatio, verdict, tradeDistribution, similarPrices,
   similarDeposits, depositDistribution, marketRatio, marketVerdict,
   jeonseTransactions, recentFilings,
-  wolseRatio, wolseDistribution, wolseTransactions,
+  wolseRatio, wolseDistribution, wolseTransactions, depositWindow, nearbyWolse,
 } from '../src/lib/ratio.js';
 const trades = (prices, area = 84) => prices.map((price) => ({ name: '가상 단지', area, price }));
 test('0 samples return null and unknown verdict', () => {
@@ -274,4 +274,62 @@ test('a rent comparison does not mutate the caller array', () => {
   const input = Object.freeze(wolseRows([[20000, 440], [20000, 390]]).map(Object.freeze));
   wolseRatio(400, input, 84, 20000);
   assert.deepEqual(input.map((r) => r.monthlyRent), [440, 390]);
+});
+
+// --- 화면에 적는 보증금 구간이 실제 필터와 같아야 한다 ---
+
+test('the stated deposit window is exactly what the filter accepts', () => {
+  // 5,579 * 1.2 = 6,694.8. Rounding that to 6,695 puts a number on screen that
+  // the filter rejects, so the table can never contain what the card promises.
+  const w = depositWindow(5579);
+  assert.equal(w.statedLow, 4464);
+  assert.equal(w.statedHigh, 6694);
+  const rows = (deposit) => [{ area: 84, deposit, monthlyRent: 100 }];
+  for (const inside of [w.statedLow, w.statedHigh]) {
+    assert.equal(wolseRatio(100, rows(inside), 84, 5579)?.sampleSize, 1,
+      `${inside} is printed as in range but the filter drops it`);
+  }
+  for (const outside of [w.statedLow - 1, w.statedHigh + 1]) {
+    assert.equal(wolseRatio(100, rows(outside), 84, 5579), null,
+      `${outside} is outside the printed range but the filter keeps it`);
+  }
+});
+test('the window a round number produces stays a round number', () => {
+  assert.deepEqual(
+    (({ statedLow, statedHigh }) => ({ statedLow, statedHigh }))(depositWindow(20000)),
+    { statedLow: 16000, statedHigh: 24000 },
+  );
+});
+test('wolseRatio reports the same window it filtered on', () => {
+  const rows = [{ area: 84, deposit: 5579, monthlyRent: 100 }];
+  const out = wolseRatio(100, rows, 84, 5579);
+  assert.equal(out.statedLow, 4464);
+  assert.equal(out.statedHigh, 6694);
+});
+
+// --- 면적 부근 월세는 한 곳에서만 센다 ---
+
+test('nearbyWolse counts the same rows the comparison starts from', () => {
+  const rows = [
+    { area: 84, deposit: 20000, monthlyRent: 400 },
+    { area: 84, deposit: 90000, monthlyRent: 140 },
+    { area: 84, deposit: 20000, monthlyRent: 0 },
+    { area: 120, deposit: 20000, monthlyRent: 400 },
+  ];
+  assert.equal(nearbyWolse(rows, 84).length, 2);
+  // A rent with no usable deposit is not a comparable filing anywhere.
+  assert.equal(nearbyWolse([{ area: 84, deposit: 0, monthlyRent: 400 }], 84).length, 0);
+});
+
+// --- 어떤 전월세 행도 조용히 사라지지 않는다 ---
+
+test('every usable rent filing lands in exactly one of the two lists', () => {
+  const rows = [
+    { area: 84, deposit: 1000, monthlyRent: NaN, year: 2026, month: 5, day: 1 },
+    { area: 84, deposit: 2000, monthlyRent: 0, year: 2026, month: 5, day: 2 },
+    { area: 84, deposit: 3000, monthlyRent: 50, year: 2026, month: 5, day: 3 },
+  ];
+  const out = recentFilings([], rows, 6);
+  assert.equal(out.totals.jeonse + out.totals.wolse, 3,
+    'a filing disappeared from both lists, so the tiles disagree with the source line');
 });
